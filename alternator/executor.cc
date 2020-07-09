@@ -2619,7 +2619,7 @@ static future<executor::request_return_type> do_query(schema_ptr schema,
         dht::partition_range_vector&& partition_ranges,
         std::vector<query::clustering_range>&& ck_bounds,
         std::unordered_set<std::string>&& attrs_to_get,
-        uint32_t limit,
+        uint64_t limit,
         db::consistency_level cl,
         filter&& filter,
         query::partition_slice::option_set custom_opts,
@@ -2742,7 +2742,7 @@ future<executor::request_return_type> executor::scan(client_state& client_state,
                 "Consistent reads are not allowed on global indexes (GSI)"));
     }
     rjson::value* limit_json = rjson::find(request, "Limit");
-    uint32_t limit = limit_json ? limit_json->GetUint64() : query::max_partitions;
+    uint64_t limit = limit_json ? limit_json->GetUint64() : query::max_partitions;
     if (limit <= 0) {
         return make_ready_future<request_return_type>(api_error("ValidationException", "Limit must be greater than 0"));
     }
@@ -3190,7 +3190,7 @@ future<executor::request_return_type> executor::query(client_state& client_state
                 "Consistent reads are not allowed on global indexes (GSI)"));
     }
     rjson::value* limit_json = rjson::find(request, "Limit");
-    uint32_t limit = limit_json ? limit_json->GetUint64() : query::max_partitions;
+    uint64_t limit = limit_json ? limit_json->GetUint64() : query::partition_max_rows;
     if (limit <= 0) {
         return make_ready_future<request_return_type>(api_error("ValidationException", "Limit must be greater than 0"));
     }

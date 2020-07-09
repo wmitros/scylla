@@ -116,7 +116,8 @@ private:
     clustering_row_ranges _ranges;
 };
 
-constexpr auto max_rows = std::numeric_limits<uint32_t>::max();
+constexpr auto max_rows = std::numeric_limits<uint64_t>::max();
+constexpr auto partition_max_rows = std::numeric_limits<uint64_t>::max();
 
 // Specifies subset of rows, columns and cell attributes to be returned in a query.
 // Can be accessed across cores.
@@ -161,13 +162,20 @@ public:
 private:
     std::unique_ptr<specific_ranges> _specific_ranges;
     cql_serialization_format _cql_format;
-    uint32_t _partition_row_limit;
+    uint32_t _partition_row_limit_low_bits;
+    std::optional<uint32_t> _partition_row_limit_high_bits;
 public:
+    partition_slice(clustering_row_ranges row_ranges, column_id_vector static_columns,
+        column_id_vector regular_columns, option_set options,
+        std::unique_ptr<specific_ranges> specific_ranges,
+        cql_serialization_format,
+        uint32_t partition_row_limit,
+        std::optional<uint32_t> partition_row_limit_extend);
     partition_slice(clustering_row_ranges row_ranges, column_id_vector static_columns,
         column_id_vector regular_columns, option_set options,
         std::unique_ptr<specific_ranges> specific_ranges = nullptr,
         cql_serialization_format = cql_serialization_format::internal(),
-        uint32_t partition_row_limit = max_rows);
+        uint64_t partition_row_limit = partition_max_rows);
     partition_slice(clustering_row_ranges ranges, const schema& schema, const column_set& mask, option_set options);
     partition_slice(const partition_slice&);
     partition_slice(partition_slice&&);
@@ -193,11 +201,22 @@ public:
     const cql_serialization_format& cql_format() const {
         return _cql_format;
     }
-    const uint32_t partition_row_limit() const {
-        return _partition_row_limit;
+    const uint32_t partition_row_limit_low_bits() const {
+        return _partition_row_limit_low_bits;
+    }
+    const std::optional<uint32_t> partition_row_limit_high_bits() const {
+        return _partition_row_limit_high_bits;
+    }
+    const uint64_t partition_row_limit() const {
+        return (static_cast<uint64_t>(_partition_row_limit_high_bits.value_or(0)) << 32) | _partition_row_limit_low_bits;
     }
     void set_partition_row_limit(uint32_t limit) {
-        _partition_row_limit = limit;
+        _partition_row_limit_low_bits = limit;
+        _partition_row_limit_high_bits = 0;
+    }
+    void set_partition_row_limit(uint64_t limit) {
+        _partition_row_limit_low_bits = static_cast<uint64_t>(limit);
+        _partition_row_limit_high_bits = static_cast<uint64_t>(limit >> 32);
     }
 
     friend std::ostream& operator<<(std::ostream& out, const partition_slice& ps);
@@ -216,7 +235,7 @@ public:
     utils::UUID cf_id;
     table_schema_version schema_version; // TODO: This should be enough, drop cf_id
     partition_slice slice;
-    uint32_t row_limit;
+    uint32_t row_limit_low_bits;
     gc_clock::time_point timestamp;
     std::optional<tracing::trace_info> trace_info;
     uint32_t partition_limit; // The maximum number of live partitions to return.
@@ -233,12 +252,13 @@ public:
     // to avoid doing work normally done on paged requests, e.g. attempting to
     // reused suspended readers.
     query::is_first_page is_first_page;
+    std::optional<uint32_t> row_limit_high_bits;
     api::timestamp_type read_timestamp; // not serialized
 public:
     read_command(utils::UUID cf_id,
                  table_schema_version schema_version,
                  partition_slice slice,
-                 uint32_t row_limit = max_rows,
+                 uint64_t row_limit = query::max_rows,
                  gc_clock::time_point now = gc_clock::now(),
                  std::optional<tracing::trace_info> ti = std::nullopt,
                  uint32_t partition_limit = max_partitions,
@@ -248,15 +268,51 @@ public:
         : cf_id(std::move(cf_id))
         , schema_version(std::move(schema_version))
         , slice(std::move(slice))
-        , row_limit(row_limit)
+        , row_limit_low_bits(static_cast<uint32_t>(row_limit))
         , timestamp(now)
         , trace_info(std::move(ti))
         , partition_limit(partition_limit)
         , query_uuid(query_uuid)
         , is_first_page(is_first_page)
+        , row_limit_high_bits(static_cast<uint32_t>(row_limit >> 32))
         , read_timestamp(rt)
     { }
 
+    read_command(utils::UUID cf_id,
+                 table_schema_version schema_version,
+                 partition_slice slice,
+                 uint32_t row_limit_low_bits,
+                 gc_clock::time_point now,
+                 std::optional<tracing::trace_info> ti,
+                 uint32_t partition_limit,
+                 utils::UUID query_uuid,
+                 query::is_first_page is_first_page,
+                 std::optional<uint32_t> row_limit_high_bits,
+                 api::timestamp_type rt = api::new_timestamp())
+        : cf_id(std::move(cf_id))
+        , schema_version(std::move(schema_version))
+        , slice(std::move(slice))
+        , row_limit_low_bits(row_limit_low_bits)
+        , timestamp(now)
+        , trace_info(std::move(ti))
+        , partition_limit(partition_limit)
+        , query_uuid(query_uuid)
+        , is_first_page(is_first_page)
+        , row_limit_high_bits(row_limit_high_bits)
+        , read_timestamp(rt)
+    { }
+
+    uint64_t get_row_limit() const {
+        return (static_cast<uint64_t>(row_limit_high_bits.value_or(0)) << 32) | row_limit_low_bits;
+    }
+    void set_row_limit(uint32_t new_row_limit) {
+        row_limit_low_bits = new_row_limit;
+        row_limit_high_bits = 0;
+    }
+    void set_row_limit(uint64_t new_row_limit) {
+        row_limit_low_bits = static_cast<uint32_t>(new_row_limit);
+        row_limit_high_bits = static_cast<uint32_t>(new_row_limit >> 32);
+    }
     friend std::ostream& operator<<(std::ostream& out, const read_command& r);
 };
 

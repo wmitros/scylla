@@ -148,11 +148,11 @@ public:
     bool has_group_by() const { return _group_by_cell_indices && !_group_by_cell_indices->empty(); }
 
 protected:
-    uint32_t do_get_limit(const query_options& options, ::shared_ptr<term> limit) const;
-    uint32_t get_limit(const query_options& options) const {
+    uint64_t do_get_limit(const query_options& options, ::shared_ptr<term> limit) const;
+    uint64_t get_limit(const query_options& options) const {
         return do_get_limit(options, _limit);
     }
-    uint32_t get_per_partition_limit(const query_options& options) const {
+    uint64_t get_per_partition_limit(const query_options& options) const {
         return do_get_limit(options, _per_partition_limit);
     }
     bool needs_post_query_ordering() const;

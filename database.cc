@@ -1213,7 +1213,7 @@ database::query_mutations(schema_ptr s, const query::read_command& cmd, const dh
             cf.as_mutation_source(),
             seastar::cref(range),
             seastar::cref(cmd.slice),
-            cmd.row_limit,
+            cmd.get_row_limit(),
             cmd.partition_limit,
             cmd.timestamp,
             timeout,
@@ -1335,7 +1335,7 @@ future<mutation> database::do_apply_counter_update(column_family& cf, const froz
                           regular_columns.end());
 
     auto slice = query::partition_slice(std::move(cr_ranges), std::move(static_columns),
-        std::move(regular_columns), { }, { }, cql_serialization_format::internal(), query::max_rows);
+        std::move(regular_columns), { }, { }, cql_serialization_format::internal());
 
     return do_with(std::move(slice), std::move(m), std::vector<locked_cell>(),
                    [this, &cf, timeout, trace_state = std::move(trace_state), op = cf.write_in_progress()] (const query::partition_slice& slice, mutation& m, std::vector<locked_cell>& locks) mutable {
