@@ -3683,7 +3683,7 @@ SEASTAR_TEST_CASE(test_skipping_using_index) {
         std::sort(keys.begin(), keys.end(), dht::decorated_key::less_comparator(table.schema()));
 
         std::vector<mutation> partitions;
-        uint32_t row_id = 0;
+        unsigned row_id = 0;
         for (auto&& key : keys) {
             mutation m(table.schema(), key);
             for (unsigned j = 0; j < rows_per_part; ++j) {

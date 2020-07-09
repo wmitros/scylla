@@ -2983,7 +2983,7 @@ storage_service::get_splits(const sstring& ks_name, const sstring& cf_name, rang
     // split_count should be much smaller than number of key samples, to avoid huge sampling error
     constexpr uint32_t min_samples_per_split = 4;
     uint64_t max_split_count = tokens.size() / min_samples_per_split + 1;
-    uint32_t split_count = std::max(uint32_t(1), static_cast<uint32_t>(std::min(max_split_count, total_row_count_estimate / keys_per_split)));
+    uint64_t split_count = std::max(uint64_t(1), std::min(max_split_count, total_row_count_estimate / keys_per_split));
 
     return calculate_splits(std::move(tokens), split_count, cf);
 };
