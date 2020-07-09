@@ -1096,7 +1096,7 @@ future<std::vector<mutation>> generate_random_mutations(
 
             auto ckeys = random_schema.make_ckeys(clustering_row_count_dist(engine));
             const auto clustering_row_count = ckeys.size();
-            for (uint32_t ck = 0; ck < clustering_row_count; ++ck) {
+            for (uint64_t ck = 0; ck < clustering_row_count; ++ck) {
                 random_schema.add_row(engine, mut, ckeys[ck], ts_gen, exp_gen);
             }
 
