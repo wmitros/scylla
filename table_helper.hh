@@ -40,6 +40,7 @@ private:
     const sstring _name; /** a table name */
     const sstring _create_cql; /** a CQL CREATE TABLE statement for the table */
     const sstring _insert_cql; /** a CQL INSERT statement */
+    const std::optional<sstring> _alter_cql; /** an optional CQL ALTER TABLE statement */
 
     cql3::statements::prepared_statement::checked_weak_ptr _prepared_stmt; /** a raw prepared statement object (containing the INSERT statement) */
     shared_ptr<cql3::statements::modification_statement> _insert_stmt; /** INSERT prepared statement */
@@ -49,7 +50,15 @@ public:
         : _keyspace(std::move(keyspace))
         , _name(std::move(name))
         , _create_cql(std::move(create_cql))
-        , _insert_cql(std::move(insert_cql)) {}
+        , _insert_cql(std::move(insert_cql))
+        , _alter_cql(std::nullopt) {}
+
+    table_helper(sstring keyspace, sstring name, sstring create_cql, sstring insert_cql, sstring alter_cql)
+        : _keyspace(std::move(keyspace))
+        , _name(std::move(name))
+        , _create_cql(std::move(create_cql))
+        , _insert_cql(std::move(insert_cql))
+        , _alter_cql(std::move(alter_cql)) {}
 
     /**
      * Tries to create a table using create_cql command.

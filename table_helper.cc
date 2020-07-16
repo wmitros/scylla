@@ -22,6 +22,7 @@
 
 #include "table_helper.hh"
 #include "cql3/query_processor.hh"
+#include "cql3/statements/alter_table_statement.hh"
 #include "cql3/statements/create_table_statement.hh"
 #include "cql3/statements/modification_statement.hh"
 #include "database.hh"
@@ -31,7 +32,22 @@ future<> table_helper::setup_table() const {
     auto& db = qp.db();
 
     if (db.has_schema(_keyspace, _name)) {
-        return make_ready_future<>();
+        if (_alter_cql) {
+            auto parsed = cql3::query_processor::parse_statement(_alter_cql.value());
+            cql3::statements::raw::cf_statement* parsed_cf_stmt = static_cast<cql3::statements::raw::cf_statement*>(parsed.get());
+            parsed_cf_stmt->prepare_keyspace(_keyspace);
+            ::shared_ptr<cql3::statements::alter_table_statement> statement =
+                            static_pointer_cast<cql3::statements::alter_table_statement>(
+                                            parsed_cf_stmt->prepare(db, qp.get_cql_stats())->statement);
+
+            // Instead of checking if the alteration is possible, we try it. If it fails, the change has already been done
+            return do_with(statement, [this] (auto& stmt) {
+                return stmt->announce_migration(service::get_storage_proxy().local(), false);
+            }).discard_result().handle_exception([this] (auto ep) {
+            });
+        } else {
+            return make_ready_future<>();
+        }
     }
 
     auto parsed = cql3::query_processor::parse_statement(_create_cql);
