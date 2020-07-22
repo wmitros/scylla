@@ -141,19 +141,19 @@ public:
 
     const sstring& column_family() const;
 
-    query::partition_slice make_partition_slice(const query_options& options) const;
+    query::partition_slice make_partition_slice(const query_options& options, bool supports_large_paging_state) const;
 
     ::shared_ptr<restrictions::statement_restrictions> get_restrictions() const;
 
     bool has_group_by() const { return _group_by_cell_indices && !_group_by_cell_indices->empty(); }
 
 protected:
-    uint64_t do_get_limit(const query_options& options, ::shared_ptr<term> limit) const;
-    uint64_t get_limit(const query_options& options) const {
-        return do_get_limit(options, _limit);
+    uint64_t do_get_limit(const query_options& options, ::shared_ptr<term> limit, uint64_t default_limit) const;
+    uint64_t get_limit(const query_options& options, bool supports_large_paging_state) const {
+        return do_get_limit(options, _limit, supports_large_paging_state ? query::max_rows : query::max_rows_if_set);
     }
-    uint64_t get_per_partition_limit(const query_options& options) const {
-        return do_get_limit(options, _per_partition_limit);
+    uint64_t get_per_partition_limit(const query_options& options, bool supports_large_paging_state) const {
+        return do_get_limit(options, _per_partition_limit, supports_large_paging_state ? query::partition_max_rows : query::max_rows_if_set);
     }
     bool needs_post_query_ordering() const;
     virtual void update_stats_rows_read(int64_t rows_read) const {
@@ -237,7 +237,7 @@ private:
             lw_shared_ptr<const service::pager::paging_state> paging_state) const;
 
     lw_shared_ptr<query::read_command>
-    prepare_command_for_base_query(const query_options& options, service::query_state& state, gc_clock::time_point now, bool use_paging) const;
+    prepare_command_for_base_query(const query_options& options, service::query_state& state, gc_clock::time_point now, bool use_paging, bool supports_large_paging_state) const;
 
     future<std::tuple<foreign_ptr<lw_shared_ptr<query::result>>, lw_shared_ptr<query::read_command>>>
     do_execute_base_query(

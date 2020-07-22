@@ -118,6 +118,7 @@ private:
 
 constexpr auto max_rows = std::numeric_limits<uint64_t>::max();
 constexpr auto partition_max_rows = std::numeric_limits<uint64_t>::max();
+constexpr auto max_rows_if_set = std::numeric_limits<uint32_t>::max();
 
 // Specifies subset of rows, columns and cell attributes to be returned in a query.
 // Can be accessed across cores.

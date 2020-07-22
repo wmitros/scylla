@@ -333,7 +333,7 @@ public:
             _max = _max - row_count;
             _exhausted = (v.total_rows < page_size && !results->is_short_read() && v.dropped_rows == 0) || _max == 0;
             // If per partition limit is defined, we need to accumulate rows fetched for last partition key if the key matches
-            if (_cmd->slice.partition_row_limit() < query::max_rows) {
+            if (_cmd->slice.partition_row_limit() < query::max_rows_if_set) {
                 if (_last_pkey && v.last_pkey && _last_pkey->equal(*_schema, *v.last_pkey)) {
                     _rows_fetched_for_last_partition += v.last_partition_row_count;
                 } else {
@@ -411,7 +411,7 @@ bool service::pager::query_pagers::may_need_paging(const schema& s, uint32_t pag
         ::shared_ptr<cql3::restrictions::statement_restrictions> filtering_restrictions) {
     // If partition row limit is applied to paging, we still need to fall back
     // to filtering the results to avoid extraneous rows on page breaks.
-    if (!filtering_restrictions && cmd->slice.partition_row_limit() < query::partition_max_rows) {
+    if (!filtering_restrictions && cmd->slice.partition_row_limit() < query::max_rows_if_set) {
         filtering_restrictions = ::make_shared<cql3::restrictions::statement_restrictions>(s, true);
     }
     if (filtering_restrictions) {

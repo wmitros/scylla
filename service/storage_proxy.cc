@@ -3117,7 +3117,7 @@ private:
             if (row_count < rows_left && partitions_left > !!row_count) {
                 rows_left -= row_count;
                 partitions_left -= !!row_count;
-                if (original_per_partition_limit != query::max_rows) {
+                if (original_per_partition_limit < query:: max_rows_if_set) {
                     auto&& last_row = get_last_reconciled_row(s, m_a_rc, cmd, original_per_partition_limit, is_reversed);
                     if (got_incomplete_information_in_partition(s, last_row, *pv, is_reversed)) {
                         _increase_per_partition_limit = true;
