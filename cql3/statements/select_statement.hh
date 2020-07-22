@@ -148,12 +148,12 @@ public:
     bool has_group_by() const { return _group_by_cell_indices && !_group_by_cell_indices->empty(); }
 
 protected:
-    uint64_t do_get_limit(const query_options& options, ::shared_ptr<term> limit) const;
-    uint64_t get_limit(const query_options& options) const {
-        return do_get_limit(options, _limit);
+    uint64_t do_get_limit(const query_options& options, ::shared_ptr<term> limit, bool supports_large_paging_state) const;
+    uint64_t get_limit(const query_options& options, bool supports_large_paging_state) const {
+        return do_get_limit(options, _limit, supports_large_paging_state);
     }
-    uint64_t get_per_partition_limit(const query_options& options) const {
-        return do_get_limit(options, _per_partition_limit);
+    uint64_t get_per_partition_limit(const query_options& options, bool supports_large_paging_state) const {
+        return do_get_limit(options, _per_partition_limit, supports_large_paging_state);
     }
     bool needs_post_query_ordering() const;
     virtual void update_stats_rows_read(int64_t rows_read) const {

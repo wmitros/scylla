@@ -103,6 +103,7 @@ private:
     gms::feature _lwt_feature;
     gms::feature _per_table_partitioners_feature;
     gms::feature _per_table_caching_feature;
+    gms::feature _large_paging_state_feature;
 
 public:
     bool cluster_supports_range_tombstones() const {
@@ -214,6 +215,10 @@ public:
 
     bool cluster_supports_lwt() const {
         return bool(_lwt_feature);
+    }
+
+    bool cluster_supports_large_paging_state() const {
+        return bool(_large_paging_state_feature);
     }
 };
 

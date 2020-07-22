@@ -120,7 +120,8 @@ cql3::statements::select_statement& view_info::select_statement() const {
 
 const query::partition_slice& view_info::partition_slice() const {
     if (!_partition_slice) {
-        _partition_slice = select_statement().make_partition_slice(cql3::query_options({ }));
+        _partition_slice = select_statement().make_partition_slice(cql3::query_options({ }),
+            service::get_local_storage_proxy().features().cluster_supports_large_paging_state());
     }
     return *_partition_slice;
 }
