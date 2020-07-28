@@ -325,6 +325,7 @@ scylla_tests = set([
     'test/boost/json_cql_query_test',
     'test/boost/json_test',
     'test/boost/keys_test',
+    'test/boost/large_paging_state_test',
     'test/boost/like_matcher_test',
     'test/boost/limiting_data_source_test',
     'test/boost/linearizing_input_stream_test',
@@ -392,6 +393,7 @@ scylla_tests = set([
     'test/boost/bptree_test',
     'test/boost/double_decker_test',
     'test/manual/ec2_snitch_test',
+    'test/manual/enormous_table_scan_test',
     'test/manual/gce_snitch_test',
     'test/manual/gossip',
     'test/manual/hint_test',
@@ -1045,6 +1047,7 @@ deps['test/boost/linearizing_input_stream_test'] = [
 
 deps['test/boost/duration_test'] += ['test/lib/exception_utils.cc']
 deps['test/boost/alternator_base64_test'] += ['alternator/base64.cc']
+deps['test/manual/enormous_table_scan_test'] += ['test/lib/enormous_table.cc']
 
 deps['utils/gz/gen_crc_combine_table'] = ['utils/gz/gen_crc_combine_table.cc']
 
