@@ -1315,7 +1315,7 @@ public:
 
         auto v = visitor(_response);
         rs.visit(v);
-        row_count_plhldr.write(v.row_count());
+        row_count_plhldr.write(v.row_count()); // even though the placeholder is for int32_t we won't overflow because of memory limits
     }
 };
 

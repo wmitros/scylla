@@ -2942,13 +2942,13 @@ future<> storage_service::force_remove_completion() {
  * Takes an ordered list of adjacent tokens and divides them in the specified number of ranges.
  */
 static std::vector<std::pair<dht::token_range, uint64_t>>
-calculate_splits(std::vector<dht::token> tokens, uint32_t split_count, column_family& cf) {
+calculate_splits(std::vector<dht::token> tokens, uint64_t split_count, column_family& cf) {
     auto sstables = cf.get_sstables();
     const double step = static_cast<double>(tokens.size() - 1) / split_count;
     auto prev_token_idx = 0;
     std::vector<std::pair<dht::token_range, uint64_t>> splits;
     splits.reserve(split_count);
-    for (uint32_t i = 1; i <= split_count; ++i) {
+    for (uint64_t i = 1; i <= split_count; ++i) {
         auto index = static_cast<uint32_t>(std::round(i * step));
         dht::token_range range({{ std::move(tokens[prev_token_idx]), false }}, {{ tokens[index], true }});
         // always return an estimate > 0 (see CASSANDRA-7322)
