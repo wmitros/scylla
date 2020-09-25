@@ -27,8 +27,8 @@
 #include "sstables/sstables.hh"
 #include "test/lib/simple_schema.hh"
 
-static sstables::sstable_set make_sstable_set(schema_ptr schema, lw_shared_ptr<sstable_list> all = {}, bool use_level_metadata = true) {
-    return sstables::sstable_set(std::make_unique<partitioned_sstable_set>(schema, std::move(all), use_level_metadata), schema);
+static sstables::sstable_set make_sstable_set(schema_ptr schema, bool use_level_metadata = true) {
+    return sstables::sstable_set(std::make_unique<partitioned_sstable_set>(schema, use_level_metadata), schema);
 }
 
 SEASTAR_TEST_CASE(test_sstables_sstable_set_read_modify_write) {
@@ -47,7 +47,8 @@ SEASTAR_TEST_CASE(test_sstables_sstable_set_read_modify_write) {
         sst1->write_components(std::move(mr), 0, s, std::move(cfg), encoding_stats{}).get();
         sst1->load().get();
 
-        auto ss1 = make_lw_shared<sstables::sstable_set>(make_sstable_set(ss.schema(), make_lw_shared<sstable_list>({sst1})));
+        auto ss1 = make_lw_shared<sstables::sstable_set>(make_sstable_set(ss.schema()));
+        ss1->insert(sst1);
         BOOST_REQUIRE_EQUAL(ss1->all()->size(), 1);
 
         // Test that a random sstable_origin is stored and retrieved properly.
