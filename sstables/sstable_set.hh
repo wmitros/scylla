@@ -40,13 +40,13 @@ class incremental_selector_impl;
 // Structure holds all sstables (a.k.a. fragments) that belong to same run identifier, which is an UUID.
 // SStables in that same run will not overlap with one another.
 class sstable_run {
-    sstable_list _all;
+    std::unordered_set<shared_sstable> _all;
 public:
     void insert(shared_sstable sst);
     void erase(shared_sstable sst);
     // Data size of the whole run, meaning it's a sum of the data size of all its fragments.
     uint64_t data_size() const;
-    const sstable_list& all() const { return _all; }
+    const std::unordered_set<shared_sstable>& all() const { return _all; }
 };
 
 class sstable_set : public enable_lw_shared_from_this<sstable_set> {
@@ -62,8 +62,6 @@ public:
     std::vector<shared_sstable> select(const dht::partition_range& range) const;
     // Return all runs which contain any of the input sstables.
     std::vector<sstable_run> select_sstable_runs(const std::vector<shared_sstable>& sstables) const;
-    // Return all sstables. It's not guaranteed that sstable_set will keep a reference to the returned list, so user should keep it.
-    lw_shared_ptr<sstable_list> all() const;
     // Prefer for_each_sstable() over all() for iteration purposes, as the latter may have to copy all sstables into a temporary
     void for_each_sstable(std::function<void(const shared_sstable&)> func) const;
     void insert(shared_sstable sst);

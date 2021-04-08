@@ -1101,7 +1101,7 @@ const sstables::sstable_set& table::get_sstable_set() const {
     return *_main_sstables;
 }
 
-lw_shared_ptr<const sstable_list> table::get_sstables() const {
+const sstable_set table::get_sstables() const {
     return _sstables->all();
 }
 
@@ -1124,11 +1124,11 @@ std::vector<sstables::shared_sstable> table::in_strategy_sstables() const {
 // As long as we haven't deleted them, compaction needs to ensure it doesn't
 // garbage-collect a tombstone that covers data in an sstable that may not be
 // successfully deleted.
-lw_shared_ptr<const sstable_list> table::get_sstables_including_compacted_undeleted() const {
+const sstable_set table::get_sstables_including_compacted_undeleted() const {
     if (_sstables_compacted_but_not_deleted.empty()) {
         return get_sstables();
     }
-    auto ret = make_lw_shared<sstable_list>(*_sstables->all());
+    auto ret = sstable_set(_sstables));
     for (auto&& s : _sstables_compacted_but_not_deleted) {
         ret->insert(s);
     }
@@ -2057,7 +2057,7 @@ table::make_reader_excluding_sstables(schema_ptr s,
 future<> table::move_sstables_from_staging(std::vector<sstables::shared_sstable> sstables) {
     return with_semaphore(_sstable_deletion_sem, 1, [this, sstables = std::move(sstables)] {
         return do_with(std::set<sstring>({dir()}), std::move(sstables), _main_sstables->all(),
-                       [this] (std::set<sstring>& dirs_to_sync, std::vector<sstables::shared_sstable>& sstables, lw_shared_ptr<sstable_list>& main_sstables) {
+                       [this] (std::set<sstring>& dirs_to_sync, std::vector<sstables::shared_sstable>& sstables, const sstable_set& main_sstables) {
             return do_for_each(sstables, [this, &dirs_to_sync, &main_sstables] (sstables::shared_sstable sst) {
                 dirs_to_sync.emplace(sst->get_dir());
                 return sst->move_to_new_dir(dir(), sst->generation(), false).then_wrapped([this, sst, &dirs_to_sync, &main_sstables] (future<> f) {
