@@ -18,6 +18,8 @@
  * You should have received a copy of the GNU General Public License
  * along with Scylla.  If not, see <http://www.gnu.org/licenses/>.
  */
+#pragma once
+
 #include "mutation.hh"
 #include "sstables.hh"
 #include "types.hh"
@@ -48,7 +50,7 @@ namespace mx {
 
 class mp_row_consumer_reader : public flat_mutation_reader::impl {
     friend class sstables::kl::mp_row_consumer_k_l;
-    friend class sstables::mx::mp_row_consumer_m;
+    friend class sstables::mx::row_consumer_m;
 protected:
     shared_sstable _sst;
 
