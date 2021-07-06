@@ -193,11 +193,6 @@ public:
     // leave only the unprocessed part. The caller must handle calling
     // process() again, and/or refilling the buffer, as needed.
     data_consumer::processing_result process_state(temporary_buffer<char>& data) {
-        _processing_data = &data;
-        return _gen.generate();
-    }
-private:
-    proceed_generator do_process_state() {
 #if 0
         // Testing hack: call process() for tiny chunks separately, to verify
         // that primitive types crossing input buffer are handled correctly.
@@ -216,6 +211,11 @@ private:
         }
 #endif
         sstlog.trace("data_consume_row_context {}: state={}, size={}", fmt::ptr(this), static_cast<int>(_state), data.size());
+        _processing_data = &data;
+        return _gen.generate();
+    }
+private:
+    proceed_generator do_process_state() {
         while (true) {
         switch (_state) {
         case state::ROW_START:
