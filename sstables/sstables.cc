@@ -1788,7 +1788,8 @@ future<> sstable::generate_summary(const io_priority_class& pc) {
                                 _manager.config().sstable_summary_ratio()),
                         [this, &pc, options = std::move(options), index_file, index_size, &sem] (summary_generator& s) mutable {
                     auto ctx = make_lw_shared<index_consume_entry_context<summary_generator>>(
-                            sem->make_permit(_schema.get(), "generate-summary"), s, trust_promoted_index::yes, *_schema, index_file, std::move(options), 0, index_size,
+                            sem->make_permit(_schema.get(), "generate-summary"), s, trust_promoted_index::yes, *_schema,
+                            make_file_input_stream(index_file, 0, index_size, std::move(options)), 0, index_size,
                             (_version >= sstable_version_types::mc
                                 ? std::make_optional(get_clustering_values_fixed_lengths(get_serialization_header()))
                                 : std::optional<column_values_fixed_lengths>{}));
