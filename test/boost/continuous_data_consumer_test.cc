@@ -114,3 +114,95 @@ SEASTAR_THREAD_TEST_CASE(test_read_unsigned_vint) {
     }
 }
 
+class skipping_consumer final : public data_consumer::continuous_data_consumer<skipping_consumer> {
+    int _initial_data_size;
+    int _to_skip;
+    int _next_data_size;
+
+    enum class state {
+        INITIAL_BYTES,
+        INITIAL_BYTES_READ_FINISH,
+        NEXT_BYTES,
+        NEXT_BYTES_READ_FINISH
+    } _state = state::INITIAL_BYTES;
+
+    // stream starting with initial_data_size 'a's, followed by to_skip 'b's,
+    // ending with next_data_size 'a's, returning one byte at a time
+    static input_stream<char> prepare_stream(int initial_data_size, int to_skip, int next_data_size) {
+        temporary_buffer<char> buf(initial_data_size + to_skip + next_data_size);
+        std::memset(buf.get_write(), 'a', initial_data_size);
+        std::memset(buf.get_write() + initial_data_size, 'b', to_skip);
+        std::memset(buf.get_write() + initial_data_size + to_skip, 'a', next_data_size);
+        return make_buffer_input_stream(std::move(buf), [] {return 1;});
+    }
+
+public:
+    skipping_consumer(int initial_data_size, int to_skip, int next_data_size)
+        : continuous_data_consumer(tests::make_permit(), prepare_stream(initial_data_size, to_skip, next_data_size),
+                                    0, initial_data_size + 1 + tests::random::get_int<int>(to_skip - 1))
+        , _initial_data_size(initial_data_size)
+        , _to_skip(to_skip)
+        , _next_data_size(next_data_size)
+    { }
+
+    bool non_consuming() { return false; }
+
+    void verify_end_state() {}
+
+    data_consumer::processing_result process_state(temporary_buffer<char>& data) {
+        switch (_state) {
+        case state::INITIAL_BYTES:
+            if (read_8(data) != read_status::ready) {
+                _state = state::INITIAL_BYTES_READ_FINISH;
+                break;
+            }
+            [[fallthrough]];
+        case state::INITIAL_BYTES_READ_FINISH:
+            if (_u8 != 'a') {
+                BOOST_FAIL("wrong data read");
+            }
+            if (--_initial_data_size == 0) {
+                _state = state::NEXT_BYTES;
+                assert(data.empty());
+                return skip_bytes{_to_skip};
+            }
+            _state = state::INITIAL_BYTES;
+            break;
+        case state::NEXT_BYTES:
+            if (read_8(data) != read_status::ready) {
+                _state = state::NEXT_BYTES_READ_FINISH;
+                break;
+            }
+            [[fallthrough]];
+        case state::NEXT_BYTES_READ_FINISH:
+            if (_u8 != 'a') {
+                BOOST_FAIL("wrong data read");
+            }
+            if (--_next_data_size == 0) {
+                return data_consumer::proceed::no;
+            }
+            _state = state::NEXT_BYTES;
+            break;
+        }
+        return data_consumer::proceed::yes;
+    }
+
+    void run() {
+        consume_input().get();
+    }
+};
+
+// Make sure that we can correctly fast forward to the next position with useful data,
+// while the previous consumer range was ending with bytes that we want to skip
+SEASTAR_THREAD_TEST_CASE(test_skip_at_end) {
+    for (int initial_data_size = 1; initial_data_size <= 10; initial_data_size++) {
+        for (int to_skip = 1; to_skip <= 10; to_skip++) {
+            for (int next_data_size = 1; next_data_size <= 10; next_data_size++) {
+                skipping_consumer consumer(initial_data_size, to_skip, next_data_size);
+                consumer.run();
+                consumer.fast_forward_to(initial_data_size + to_skip, initial_data_size + to_skip + next_data_size).get();
+                consumer.run();
+            }
+        }
+    }
+}
