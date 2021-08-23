@@ -180,7 +180,11 @@ table::make_reader(schema_ptr s,
         readers.emplace_back(mt->make_flat_reader(s, permit, range, slice, pc, trace_state, fwd, fwd_mr));
     }
 
-    if (cache_enabled() && !slice.options.contains(query::partition_slice::option::bypass_cache)) {
+    if (cache_enabled() && !slice.options.contains(query::partition_slice::option::bypass_cache)
+            && !slice.options.contains(query::partition_slice::option::reversed)) {
+        // FIXME: reenable cache for reversed reads after:
+        // - support for reversed reads is implemented in the cache,
+        // - fast forwarding is implemented in reversed sstable readers.
         readers.emplace_back(_cache.make_reader(s, permit, range, slice, pc, std::move(trace_state), fwd, fwd_mr));
     } else {
         readers.emplace_back(make_sstable_reader(s, permit, _sstables, range, slice, pc, std::move(trace_state), fwd, fwd_mr));
