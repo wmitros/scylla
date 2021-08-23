@@ -2140,10 +2140,12 @@ sstable::make_reader_v1(
         streamed_mutation::forwarding fwd,
         mutation_reader::forwarding fwd_mr,
         read_monitor& mon) {
-    if (_version >= version_types::mc) {
-        return downgrade_to_v1(mx::make_reader(shared_from_this(), std::move(schema), std::move(permit), range, slice, pc, std::move(trace_state), fwd, fwd_mr, mon));
-    }
-    return kl::make_reader(shared_from_this(), std::move(schema), std::move(permit), range, slice, pc, std::move(trace_state), fwd, fwd_mr, mon);
+    schema = maybe_reverse(std::move(schema), slice);
+    return maybe_reverse(
+            _version >= version_types::mc
+                ? downgrade_to_v1(mx::make_reader(shared_from_this(), std::move(schema), std::move(permit), range, slice, pc, std::move(trace_state), fwd, fwd_mr, mon))
+                : kl::make_reader(shared_from_this(), std::move(schema), std::move(permit), range, slice, pc, std::move(trace_state), fwd, fwd_mr, mon),
+            slice, permit.max_result_size());
 }
 
 flat_mutation_reader_v2

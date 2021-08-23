@@ -82,7 +82,7 @@ table::make_sstable_reader(schema_ptr s,
                 _stats.estimated_sstable_per_read, pr, slice, pc, std::move(trace_state), fwd, fwd_mr);
     } else {
         return sstables->make_local_shard_sstable_reader(std::move(s), std::move(permit), pr, slice, pc,
-                std::move(trace_state), fwd, fwd_mr);
+                std::move(trace_state), fwd, fwd_mr, sstables::default_read_monitor_generator());
     }
 }
 
@@ -189,9 +189,7 @@ table::make_reader(schema_ptr s,
         // - fast forwarding is implemented in reversed sstable readers.
         readers.emplace_back(_cache.make_reader(s, permit, range, slice, pc, std::move(trace_state), fwd, fwd_mr));
     } else {
-        readers.emplace_back(maybe_reverse(
-                make_sstable_reader(maybe_reverse(s, slice), permit, _sstables, range, slice, pc, std::move(trace_state), fwd, fwd_mr),
-                slice, permit.max_result_size()));
+        readers.emplace_back(make_sstable_reader(s, permit, _sstables, range, slice, pc, std::move(trace_state), fwd, fwd_mr));
     }
 
     auto reader = make_combined_reader(s, std::move(permit), std::move(readers), fwd, fwd_mr);

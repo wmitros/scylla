@@ -206,6 +206,8 @@ public:
     }
 
     // Returns a mutation_reader for given range of partitions
+    //
+    // Precondition: the slice is not reversed.
     flat_mutation_reader_v2 make_reader(
             schema_ptr schema,
             reader_permit permit,
@@ -217,6 +219,13 @@ public:
             mutation_reader::forwarding fwd_mr = mutation_reader::forwarding::yes,
             read_monitor& monitor = default_read_monitor());
 
+    // Precondition: if the slice is reversed, the schema must be reversed as well.
+    // Reversed slices must be provided in the 'half-reversed' format (the order of ranges
+    // being reversed, but the ranges themselves are not).
+    //
+    // If the slice is reversed, each partition returned by the reader will be reversed,
+    // i.e. the fragments will be returned according to the order of the reversed schema,
+    // and the reader does not support fast forwarding.
     flat_mutation_reader make_reader_v1(
             schema_ptr schema,
             reader_permit permit,

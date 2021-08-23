@@ -105,6 +105,13 @@ public:
     };
     incremental_selector make_incremental_selector() const;
 
+    // Precondition: if the slice is reversed, the schema must be reversed as well.
+    // Reversed slices must be provided in the 'half-reversed' format (the order of ranges
+    // being reversed, but the ranges themselves are not).
+    //
+    // If the slice is reversed, each partition returned by the reader will be reversed,
+    // i.e. the fragments will be returned according to the order of the reversed schema,
+    // and the reader does not support fast forwarding.
     flat_mutation_reader create_single_key_sstable_reader(
         column_family*,
         schema_ptr,
@@ -121,6 +128,8 @@ public:
     ///
     /// The reader is unrestricted, but will account its resource usage on the
     /// semaphore belonging to the passed-in permit.
+    //
+    // Precondition: the slice is not reversed.
     flat_mutation_reader make_range_sstable_reader(
         schema_ptr,
         reader_permit,
@@ -133,6 +142,14 @@ public:
         read_monitor_generator& rmg = default_read_monitor_generator()) const;
 
     // Filters out mutations that don't belong to the current shard.
+    //
+    // Precondition: if the slice is reversed, the schema must be reversed as well.
+    // Reversed slices must be provided in the 'half-reversed' format (the order of ranges
+    // being reversed, but the ranges themselves are not).
+    //
+    // If the slice is reversed, each partition returned by the reader will be reversed,
+    // i.e. the fragments will be returned according to the order of the reversed schema,
+    // and the reader does not support fast forwarding.
     flat_mutation_reader make_local_shard_sstable_reader(
         schema_ptr,
         reader_permit,

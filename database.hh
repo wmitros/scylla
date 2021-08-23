@@ -591,6 +591,14 @@ private:
     // Caller needs to ensure that column_family remains live (FIXME: relax this).
     // The 'range' parameter must be live as long as the reader is used.
     // Mutations returned by the reader will all have given schema.
+    //
+    // Precondition: if the slice is reversed, the schema must be reversed as well.
+    // Reversed slices must be provided in the 'half-reversed' format (the order of ranges
+    // being reversed, but the ranges themselves are not).
+    //
+    // If the slice is reversed, each partition returned by the reader will be reversed,
+    // i.e. the fragments will be returned according to the order of the reversed schema,
+    // and the reader does not support fast forwarding.
     flat_mutation_reader make_sstable_reader(schema_ptr schema,
                                         reader_permit permit,
                                         lw_shared_ptr<sstables::sstable_set> sstables,

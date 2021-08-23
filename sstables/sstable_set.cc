@@ -746,8 +746,7 @@ sstable_set_impl::create_single_key_sstable_reader(
         const io_priority_class& pc,
         tracing::trace_state_ptr trace_state,
         streamed_mutation::forwarding fwd,
-        mutation_reader::forwarding fwd_mr) const
-{
+        mutation_reader::forwarding fwd_mr) const {
     const auto& pos = pr.start()->value();
     auto selected_sstables = filter_sstable_for_reader_by_pk(select(pr), *schema, pos);
     auto num_sstables = selected_sstables.size();
@@ -758,7 +757,7 @@ sstable_set_impl::create_single_key_sstable_reader(
         filter_sstable_for_reader_by_ck(std::move(selected_sstables), *cf, schema, slice)
         | boost::adaptors::transformed([&] (const shared_sstable& sstable) {
             tracing::trace(trace_state, "Reading key {} from sstable {}", pos, seastar::value_of([&sstable] { return sstable->get_filename(); }));
-            return sstable->make_reader_v1(schema, permit, pr, slice, pc, trace_state, fwd);
+            return sstable->make_reader_v1(schema, permit, pr, slice, pc, trace_state, fwd, fwd_mr, default_read_monitor());
         })
     );
 
@@ -822,8 +821,8 @@ time_series_sstable_set::create_single_key_sstable_reader(
     auto& stats = *cf->cf_stats();
     stats.clustering_filter_count++;
 
-    auto create_reader = [schema, permit, &pr, &slice, &pc, trace_state, fwd_sm] (sstable& sst) {
-        return sst.make_reader_v1(schema, permit, pr, slice, pc, trace_state, fwd_sm);
+    auto create_reader = [schema, permit, &pr, &slice, &pc, trace_state, fwd_sm, fwd_mr] (sstable& sst) {
+        return sst.make_reader_v1(schema, permit, pr, slice, pc, trace_state, fwd_sm, fwd_mr, default_read_monitor());
     };
 
     auto ck_filter = [ranges = slice.get_all_ranges()] (const sstable& sst) { return sst.may_contain_rows(ranges); };
@@ -1059,8 +1058,11 @@ sstable_set::make_range_sstable_reader(
         tracing::trace_state_ptr trace_state,
         streamed_mutation::forwarding fwd,
         mutation_reader::forwarding fwd_mr,
-        read_monitor_generator& monitor_generator) const
-{
+        read_monitor_generator& monitor_generator) const {
+    if (slice.options.contains(query::partition_slice::option::reversed)) {
+        on_internal_error(sstlog, "sstable_set::make_range_sstable_reader: reversed slices not supported");
+    }
+
     auto reader_factory_fn = [s, permit, &slice, &pc, trace_state, fwd, fwd_mr, &monitor_generator]
             (shared_sstable& sst, const dht::partition_range& pr) mutable {
         return sst->make_reader_v1(s, permit, pr, slice, pc, trace_state, fwd, fwd_mr, monitor_generator(sst));
@@ -1084,8 +1086,7 @@ sstable_set::make_local_shard_sstable_reader(
         tracing::trace_state_ptr trace_state,
         streamed_mutation::forwarding fwd,
         mutation_reader::forwarding fwd_mr,
-        read_monitor_generator& monitor_generator) const
-{
+        read_monitor_generator& monitor_generator) const {
     auto reader_factory_fn = [s, permit, &slice, &pc, trace_state, fwd, fwd_mr, &monitor_generator]
             (shared_sstable& sst, const dht::partition_range& pr) mutable {
         assert(!sst->is_shared());
