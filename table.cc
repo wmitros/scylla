@@ -177,7 +177,9 @@ table::make_reader(schema_ptr s,
     // https://github.com/scylladb/scylla/issues/185
 
     for (auto&& mt : *_memtables) {
-        readers.emplace_back(mt->make_flat_reader(s, permit, range, slice, pc, trace_state, fwd, fwd_mr));
+        readers.emplace_back(maybe_reverse(
+                    mt->make_flat_reader(maybe_reverse(s, slice), permit, range, slice, pc, trace_state, fwd, fwd_mr),
+                    slice, permit.max_result_size()));
     }
 
     if (cache_enabled() && !slice.options.contains(query::partition_slice::option::bypass_cache)
@@ -187,13 +189,12 @@ table::make_reader(schema_ptr s,
         // - fast forwarding is implemented in reversed sstable readers.
         readers.emplace_back(_cache.make_reader(s, permit, range, slice, pc, std::move(trace_state), fwd, fwd_mr));
     } else {
-        readers.emplace_back(make_sstable_reader(s, permit, _sstables, range, slice, pc, std::move(trace_state), fwd, fwd_mr));
+        readers.emplace_back(maybe_reverse(
+                make_sstable_reader(maybe_reverse(s, slice), permit, _sstables, range, slice, pc, std::move(trace_state), fwd, fwd_mr),
+                slice, permit.max_result_size()));
     }
 
-    auto max_result_size = permit.max_result_size();
-    auto reader = maybe_reverse(
-            make_combined_reader(maybe_reverse(s, slice), std::move(permit), std::move(readers), fwd, fwd_mr),
-            slice, std::move(max_result_size));
+    auto reader = make_combined_reader(s, std::move(permit), std::move(readers), fwd, fwd_mr);
     if (_config.data_listeners && !_config.data_listeners->empty()) {
         return _config.data_listeners->on_read(s, range, slice, std::move(reader));
     } else {
