@@ -147,7 +147,10 @@ table::make_reader(schema_ptr s,
                            streamed_mutation::forwarding fwd,
                            mutation_reader::forwarding fwd_mr) const {
     if (_virtual_reader) {
-        return (*_virtual_reader).make_reader(s, std::move(permit), range, slice, pc, trace_state, fwd, fwd_mr);
+        auto max_result_size = permit.max_result_size();
+        return maybe_reverse(
+            (*_virtual_reader).make_reader(maybe_reverse(s, slice), std::move(permit), range, slice, pc, trace_state, fwd, fwd_mr),
+            slice, std::move(max_result_size));
     }
 
     std::vector<flat_mutation_reader> readers;
@@ -183,11 +186,14 @@ table::make_reader(schema_ptr s,
         readers.emplace_back(make_sstable_reader(s, permit, _sstables, range, slice, pc, std::move(trace_state), fwd, fwd_mr));
     }
 
-    auto comb_reader = make_combined_reader(s, std::move(permit), std::move(readers), fwd, fwd_mr);
+    auto max_result_size = permit.max_result_size();
+    auto reader = maybe_reverse(
+            make_combined_reader(maybe_reverse(s, slice), std::move(permit), std::move(readers), fwd, fwd_mr),
+            slice, std::move(max_result_size));
     if (_config.data_listeners && !_config.data_listeners->empty()) {
-        return _config.data_listeners->on_read(s, range, slice, std::move(comb_reader));
+        return _config.data_listeners->on_read(s, range, slice, std::move(reader));
     } else {
-        return comb_reader;
+        return reader;
     }
 }
 
@@ -2001,7 +2007,7 @@ table::query(schema_ptr s,
 
         std::exception_ptr ex;
       try {
-        co_await q.consume_page(query_result_builder(*s, qs.builder), qs.remaining_rows(), qs.remaining_partitions(), qs.cmd.timestamp, permit.max_result_size());
+        co_await q.consume_page(query_result_builder(*s, qs.builder), qs.remaining_rows(), qs.remaining_partitions(), qs.cmd.timestamp);
       } catch (...) {
         ex = std::current_exception();
       }
@@ -2054,7 +2060,7 @@ table::mutation_query(schema_ptr s,
     // legacy format.
     auto result_schema = cmd.slice.options.contains(query::partition_slice::option::reversed) ? s->make_reversed() : s;
     auto rrb = reconcilable_result_builder(*result_schema, cmd.slice, std::move(accounter));
-    auto r = co_await q.consume_page(std::move(rrb), cmd.get_row_limit(), cmd.partition_limit, cmd.timestamp, permit.max_result_size());
+    auto r = co_await q.consume_page(std::move(rrb), cmd.get_row_limit(), cmd.partition_limit, cmd.timestamp);
 
     if (!saved_querier || (!q.are_limits_reached() && !r.is_short_read())) {
         co_await q.close();

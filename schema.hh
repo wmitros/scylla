@@ -1040,3 +1040,8 @@ inline void check_schema_version(table_schema_version expected, const schema& ac
         throw_with_backtrace<schema_mismatch_error>(expected, access);
     }
 }
+
+// Reverse the schema if the slice is reversed (see `schema::make_reversed`).
+// In particular unreverse already reversed schemas (however, the unreversed schema
+// won't be exactly same as the original; again see `schema::make_reversed`).
+schema_ptr maybe_reverse(schema_ptr, const query::partition_slice&);

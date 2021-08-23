@@ -653,7 +653,7 @@ future<page_consume_result<ResultBuilder>> read_page(
     std::exception_ptr ex;
     try {
         auto [ckey, result] = co_await query::consume_page(reader, compaction_state, cmd.slice, std::move(result_builder), cmd.get_row_limit(),
-                cmd.partition_limit, cmd.timestamp, *cmd.max_result_size);
+                cmd.partition_limit, cmd.timestamp);
         auto buffer = reader.detach_buffer();
         co_await reader.close();
         // page_consume_result cannot fail so there's no risk of double-closing reader.

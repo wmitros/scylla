@@ -242,6 +242,13 @@ flat_mutation_reader make_reversing_reader(flat_mutation_reader original, query:
     return make_flat_mutation_reader<partition_reversing_mutation_reader>(std::move(original), max_size);
 }
 
+flat_mutation_reader maybe_reverse(flat_mutation_reader r, const query::partition_slice& s, query::max_result_size max_size) {
+    if (s.options.contains(query::partition_slice::option::reversed)) {
+        return make_reversing_reader(std::move(r), std::move(max_size));
+    }
+    return r;
+}
+
 template<typename Source>
 future<bool> flat_mutation_reader::impl::fill_buffer_from(Source& source) {
     if (source.is_buffer_empty()) {

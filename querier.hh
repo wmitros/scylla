@@ -83,8 +83,7 @@ auto consume_page(flat_mutation_reader& reader,
         Consumer&& consumer,
         uint64_t row_limit,
         uint32_t partition_limit,
-        gc_clock::time_point query_time,
-        query::max_result_size max_size) {
+        gc_clock::time_point query_time) {
     return reader.peek().then([=, &reader, consumer = std::move(consumer), &slice] (
                 mutation_fragment* next_fragment) mutable {
         const auto next_fragment_kind = next_fragment ? next_fragment->mutation_fragment_kind() : mutation_fragment::kind::partition_end;
@@ -95,17 +94,7 @@ auto consume_page(flat_mutation_reader& reader,
                 compaction_state,
                 clustering_position_tracker(std::move(consumer), last_ckey));
 
-        auto consume = [&reader, &slice, reader_consumer = std::move(reader_consumer), max_size] () mutable {
-            if (slice.options.contains(query::partition_slice::option::reversed)) {
-                return with_closeable(make_reversing_reader(make_flat_mutation_reader<delegating_reader>(reader), max_size),
-                        [reader_consumer = std::move(reader_consumer)] (flat_mutation_reader& reversing_reader) mutable {
-                    return reversing_reader.consume(std::move(reader_consumer));
-                });
-            }
-            return reader.consume(std::move(reader_consumer));
-        };
-
-        return consume().then([last_ckey] (auto&&... results) mutable {
+        return reader.consume(std::move(reader_consumer)).then([last_ckey] (auto&&... results) mutable {
             static_assert(sizeof...(results) <= 1);
             return make_ready_future<std::tuple<std::optional<clustering_key_prefix>, std::decay_t<decltype(results)>...>>(std::tuple(std::move(*last_ckey), std::move(results)...));
         });
@@ -128,14 +117,6 @@ protected:
     std::variant<flat_mutation_reader, reader_concurrency_semaphore::inactive_read_handle> _reader;
     dht::partition_ranges_view _query_ranges;
 
-protected:
-    schema_ptr underlying_schema() const {
-        if (is_reversed()) {
-            return _schema->make_reversed();
-        }
-        return _schema;
-    }
-
 public:
     querier_base(reader_permit permit, std::unique_ptr<const dht::partition_range> range,
             std::unique_ptr<const query::partition_slice> slice, flat_mutation_reader reader, dht::partition_ranges_view query_ranges)
@@ -153,7 +134,7 @@ public:
         , _permit(std::move(permit))
         , _range(std::make_unique<const dht::partition_range>(std::move(range)))
         , _slice(std::make_unique<const query::partition_slice>(std::move(slice)))
-        , _reader(ms.make_reader(underlying_schema(), _permit, *_range, *_slice, pc, std::move(trace_ptr), streamed_mutation::forwarding::no, mutation_reader::forwarding::no))
+        , _reader(ms.make_reader(_schema, _permit, *_range, *_slice, pc, std::move(trace_ptr), streamed_mutation::forwarding::no, mutation_reader::forwarding::no))
         , _query_ranges(*_range)
     { }
 
@@ -208,6 +189,13 @@ public:
 ///     mismatch is detected the querier shouldn't be used to produce the next
 ///     page. It should be dropped instead and a new one should be created
 ///     instead.
+//
+// Precondition: if the slice contains the `reversed` option (i.e. reversed query), then:
+// - the schema must be reversed,
+// - the order of ranges in the slice must be reversed (FIXME: after full conversion to native
+//   reversed format each range must also be reversed),
+// - the readers returned from the mutation source must return each partition in reverse order,
+//   i.e. according to the order given by the reversed schema.
 template <emit_only_live_rows OnlyLive>
 class querier : public querier_base {
     lw_shared_ptr<compact_for_query_state<OnlyLive>> _compaction_state;
@@ -234,10 +222,9 @@ public:
     auto consume_page(Consumer&& consumer,
             uint64_t row_limit,
             uint32_t partition_limit,
-            gc_clock::time_point query_time,
-            query::max_result_size max_size) {
+            gc_clock::time_point query_time) {
         return ::query::consume_page(std::get<flat_mutation_reader>(_reader), _compaction_state, *_slice, std::move(consumer), row_limit,
-                partition_limit, query_time, max_size).then([this] (auto&& results) {
+                partition_limit, query_time).then([this] (auto&& results) {
             _last_ckey = std::get<std::optional<clustering_key>>(std::move(results));
             constexpr auto size = std::tuple_size<std::decay_t<decltype(results)>>::value;
             static_assert(size <= 2);

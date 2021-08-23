@@ -652,6 +652,14 @@ public:
     // Mutations returned by the reader will all have given schema.
     // If I/O needs to be issued to read anything in the specified range, the operations
     // will be scheduled under the priority class given by pc.
+    //
+    // Precondition: if the slice is reversed, the schema must be reversed as well.
+    // Reversed slices must be provided in the 'half-reversed' format (the order of ranges
+    // being reversed, but the ranges themselves are not).
+    //
+    // If the slice is reversed, each partition returned by the reader will be reversed,
+    // i.e. the fragments will be returned according to the order of the reversed schema,
+    // and the reader does not support fast forwarding.
     flat_mutation_reader make_reader(schema_ptr schema,
             reader_permit permit,
             const dht::partition_range& range,

@@ -917,6 +917,9 @@ make_generating_reader(schema_ptr s, reader_permit permit, std::function<future<
 flat_mutation_reader
 make_reversing_reader(flat_mutation_reader original, query::max_result_size max_size);
 
+// Reverse the reader if the slice is reversed (denoted by the `reversed` option in the slice).
+flat_mutation_reader maybe_reverse(flat_mutation_reader, const query::partition_slice&, query::max_result_size max_size);
+
 /// A cosumer function that is passed a flat_mutation_reader to be consumed from
 /// and returns a future<> resolved when the reader is fully consumed, and closed.
 /// Note: the function assumes ownership of the reader and must close it in all cases.

@@ -1666,3 +1666,7 @@ schema_mismatch_error::schema_mismatch_error(table_schema_version expected, cons
     : std::runtime_error(fmt::format("Attempted to deserialize schema-dependent object of version {} using {}.{} {}",
         expected, access.ks_name(), access.cf_name(), access.version()))
 { }
+
+schema_ptr maybe_reverse(schema_ptr s, const query::partition_slice& slice) {
+    return slice.options.contains(query::partition_slice::option::reversed) ? s->make_reversed() : s;
+}
