@@ -61,6 +61,7 @@ using namespace sstables;
 class sstable_assertions final {
     test_env& _env;
     shared_sstable _sst;
+    query::partition_slice _reversed_full_slice;
 public:
     sstable_assertions(test_env& env, schema_ptr schema, const sstring& path, sstable_version_types version = sstable_version_types::mc, int generation = 1)
         : _env(env)
@@ -70,6 +71,7 @@ public:
                             version,
                             sstable_format_types::big,
                             1))
+        , _reversed_full_slice(half_reverse_slice(*_sst->_schema, _sst->_schema->full_slice()))
     { }
 
     test_env& get_env() {
@@ -99,6 +101,9 @@ public:
     }
     flat_mutation_reader_v2 make_reader() {
         return _sst->make_reader(_sst->_schema, _env.make_reader_permit(), query::full_partition_range, _sst->_schema->full_slice());
+    }
+    flat_mutation_reader_v2 make_reversing_reader(const dht::partition_range& range) {
+        return make_reversing_reader(range, _reversed_full_slice);
     }
 
     const stats_metadata& get_stats_metadata() const {
@@ -145,6 +150,25 @@ public:
                                  fwd_mr,
                                  monitor);
     }
+    flat_mutation_reader_v2 make_reversing_reader(
+            const dht::partition_range& range,
+            const query::partition_slice& slice,
+            const io_priority_class& pc = default_priority_class(),
+            tracing::trace_state_ptr trace_state = {},
+            streamed_mutation::forwarding fwd = streamed_mutation::forwarding::no,
+            mutation_reader::forwarding fwd_mr = mutation_reader::forwarding::no,
+            read_monitor& monitor = default_read_monitor()) {
+        return _sst->make_reader(_sst->_schema->make_reversed(),
+                                 _env.make_reader_permit(),
+                                 range,
+                                 slice,
+                                 pc,
+                                 std::move(trace_state),
+                                 fwd,
+                                 fwd_mr,
+                                 monitor);
+    }
+
     void assert_toc(const std::set<component_type>& expected_components) {
         for (auto& expected : expected_components) {
             if(!_sst->_recognized_components.contains(expected)) {
@@ -2860,6 +2884,60 @@ SEASTAR_TEST_CASE(test_uncompressed_simple_read) {
                       {{int_cdef, int32_type->decompose(1003)}})
         .produces_partition_end()
         .produces_end_of_stream();
+
+    // Reversed reader should give exactly the same result as each partition has
+    // only one row
+
+    {
+    auto range = dht::partition_range::make_singular(to_key(5));
+    assert_that(sst.make_reversing_reader(range))
+        .produces_partition_start(to_key(5))
+        .produces_row(clustering_key::from_single_value(*UNCOMPRESSED_SIMPLE_SCHEMA,
+                                                        int32_type->decompose(105)),
+                      {{int_cdef, int32_type->decompose(1005)}})
+        .produces_partition_end()
+        .produces_end_of_stream();
+    }
+    {
+    auto range = dht::partition_range::make_singular(to_key(1));
+    assert_that(sst.make_reversing_reader(range))
+        .produces_partition_start(to_key(1))
+        .produces_row(clustering_key::from_single_value(*UNCOMPRESSED_SIMPLE_SCHEMA,
+                                                        int32_type->decompose(101)),
+                      {{int_cdef, int32_type->decompose(1001)}})
+        .produces_partition_end()
+        .produces_end_of_stream();
+    }
+    {
+    auto range = dht::partition_range::make_singular(to_key(2));
+    assert_that(sst.make_reversing_reader(range))
+        .produces_partition_start(to_key(2))
+        .produces_row(clustering_key::from_single_value(*UNCOMPRESSED_SIMPLE_SCHEMA,
+                                                        int32_type->decompose(102)),
+                      {{int_cdef, int32_type->decompose(1002)}})
+        .produces_partition_end()
+        .produces_end_of_stream();
+    }
+    {
+    auto range = dht::partition_range::make_singular(to_key(4));
+    assert_that(sst.make_reversing_reader(range))
+        .produces_partition_start(to_key(4))
+        .produces_row(clustering_key::from_single_value(*UNCOMPRESSED_SIMPLE_SCHEMA,
+                                                        int32_type->decompose(104)),
+                      {{int_cdef, int32_type->decompose(1004)}})
+        .produces_partition_end()
+        .produces_end_of_stream();
+    }
+    {
+    auto range = dht::partition_range::make_singular(to_key(3));
+    assert_that(sst.make_reversing_reader(range))
+        .produces_partition_start(to_key(3))
+        .produces_row(clustering_key::from_single_value(*UNCOMPRESSED_SIMPLE_SCHEMA,
+                                                        int32_type->decompose(103)),
+                      {{int_cdef, int32_type->decompose(1003)}})
+        .produces_partition_end()
+        .produces_end_of_stream();
+    }
   });
 }
 
