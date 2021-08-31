@@ -2124,6 +2124,10 @@ sstable::make_reader(
     if (_version >= version_types::mc) {
         return mx::make_reader(shared_from_this(), std::move(schema), std::move(permit), range, slice, pc, std::move(trace_state), fwd, fwd_mr, mon);
     }
+
+    if (slice.options.contains(query::partition_slice::option::reversed)) {
+        on_internal_error(sstlog, "sstable::make_reader (v2 version): reversed slices not supported for sstable versions < mc");
+    }
     return upgrade_to_v2(kl::make_reader(shared_from_this(), std::move(schema), std::move(permit), range, slice, pc, std::move(trace_state), fwd, fwd_mr, mon));
 }
 
@@ -2138,12 +2142,27 @@ sstable::make_reader_v1(
         streamed_mutation::forwarding fwd,
         mutation_reader::forwarding fwd_mr,
         read_monitor& mon) {
-    schema = maybe_reverse(std::move(schema), slice);
+    auto max_result_size = permit.max_result_size();
+    if (_version >= version_types::mc) {
+        auto reader = downgrade_to_v1(mx::make_reader(shared_from_this(), schema, std::move(permit), range, slice, pc, std::move(trace_state), fwd, fwd_mr, mon));
+        if (*reader.schema() != *schema) {
+            // The reader has modified the provided schema.
+            // Currently this can happen in only one scenario: we perform a reversed query,
+            // thus provided the reader a reversed slice and a reversed schema, but the reader rejected
+            // the reversing request and tells us to perform the reversing ourselves (the data from the reader
+            // will return in forward order).
+            assert(slice.options.contains(query::partition_slice::option::reversed));
+            assert(reader.schema()->version() == schema->make_reversed()->version());
+            return make_reversing_reader(std::move(reader), max_result_size);
+        }
+
+        return reader;
+    }
+
     return maybe_reverse(
-            _version >= version_types::mc
-                ? downgrade_to_v1(mx::make_reader(shared_from_this(), std::move(schema), std::move(permit), range, slice, pc, std::move(trace_state), fwd, fwd_mr, mon))
-                : kl::make_reader(shared_from_this(), std::move(schema), std::move(permit), range, slice, pc, std::move(trace_state), fwd, fwd_mr, mon),
-            slice, permit.max_result_size());
+            kl::make_reader(shared_from_this(), maybe_reverse(std::move(schema), slice), std::move(permit),
+                range, slice, pc, std::move(trace_state), fwd, fwd_mr, mon),
+        slice, max_result_size);
 }
 
 flat_mutation_reader_v2
