@@ -33,9 +33,13 @@ class clustering_key_filter_ranges {
     std::reference_wrapper<const clustering_row_ranges> _ref;
 public:
     clustering_key_filter_ranges(const clustering_row_ranges& ranges) : _ref(ranges) { }
+    clustering_key_filter_ranges(clustering_row_ranges&& ranges)
+        : _storage(std::make_move_iterator(ranges.begin()), std::make_move_iterator(ranges.end())), _ref(_storage) {}
+
     struct reversed { };
     clustering_key_filter_ranges(reversed, const clustering_row_ranges& ranges)
         : _storage(ranges.rbegin(), ranges.rend()), _ref(_storage) { }
+
 
     clustering_key_filter_ranges(clustering_key_filter_ranges&& other) noexcept
         : _storage(std::move(other._storage))
