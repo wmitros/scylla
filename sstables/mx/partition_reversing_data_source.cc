@@ -24,7 +24,6 @@
 #include "partition_reversing_data_source.hh"
 #include "reader_permit.hh"
 #include "sstables/consumer.hh"
-#include "sstables/processing_result_generator.hh"
 #include "sstables/shared_sstable.hh"
 #include "sstables/sstables.hh"
 #include "sstables/types.hh"
@@ -41,16 +40,26 @@ namespace mx {
 // Parsing copied from the sstable reader, with verification removed.
 //
 class partition_header_context : public data_consumer::continuous_data_consumer<partition_header_context> {
+    enum class state {
+        PARTITION_START,
+        PARTITION_KEY_AND_DELETION_TIME,
+        FLAGS,
+        FLAGS_2,
+        EXTENDED_FLAGS,
+        STATIC_ROW_SIZE,
+        FINISHED
+    } _state = state::PARTITION_START;
+
     uint64_t _header_end_pos;
-    bool _finished = false;
-    processing_result_generator _gen;
-    temporary_buffer<char>* _processing_data;
+    uint64_t current_position(temporary_buffer<char>& data) {
+        return position() - data.size();
+    }
 public:
     bool non_consuming() const {
-        return false;
+        return _state == state::FLAGS_2 || _state == state::STATIC_ROW_SIZE || _state == state::FINISHED;
     }
     void verify_end_state() const {
-        if (!_finished) {
+        if (_state != state::FINISHED) {
             throw std::runtime_error("partition_header_context - no more data but parsing is incomplete");
         }
     }
@@ -58,58 +67,69 @@ public:
         return _header_end_pos;
     }
     data_consumer::processing_result process_state(temporary_buffer<char>& data) {
-        _processing_data = &data;
-        auto ret = _gen.generate();
-        if (ret == data_consumer::proceed::no) {
-            _finished = true;
-        }
-        return ret;
-    }
-private:
-    uint64_t current_position() {
-        return position() - _processing_data->size();
-    }
-    processing_result_generator do_process_state() {
-        // length of the partition key
-        co_yield read_16(*_processing_data);
-        co_yield skip(*_processing_data,
+        switch (_state) {
+        case state::PARTITION_START:
+            if (read_16(data) != read_status::ready) {
+                // length of the partition key
+                _state = state::PARTITION_KEY_AND_DELETION_TIME;
+                break;
+            }
+        case state::PARTITION_KEY_AND_DELETION_TIME:
+            _state = state::FLAGS;
+            return skip(data,
                 // skip partition key
                 uint32_t{_u16}
                 // skip deletion_time::local_deletion_time
                 + sizeof(uint32_t)
                 // skip deletion_time::marked_for_delete_at
                 + sizeof(uint64_t));
+        case state::FLAGS:
+            if (read_8(data) != read_status::ready) {
+                _state = state::EXTENDED_FLAGS;
+                break;
+            }
+        case state::FLAGS_2: {
+            // Peek the first row or tombstone. If it's a static row, determine where it ends,
+            // i.e. where the sequence of clustering rows starts.
 
-        // Peek the first row or tombstone. If it's a static row, determine where it ends,
-        // i.e. where the sequence of clustering rows starts.
-
-        co_yield read_8(*_processing_data);
-        auto flags = unfiltered_flags_m(_u8);
-        if (flags.is_end_of_partition() || flags.is_range_tombstone() || !flags.has_extended_flags()) {
-            _header_end_pos = current_position() - 1;
-            co_yield data_consumer::proceed::no;
-        } else {
-            co_yield read_8(*_processing_data);
-            auto extended_flags = unfiltered_extended_flags_m(_u8);
-            if (!extended_flags.is_static()) {
-                _header_end_pos = current_position() - 2;
-                co_yield data_consumer::proceed::no;
+            auto flags = unfiltered_flags_m(_u8);
+            if (flags.is_end_of_partition() || flags.is_range_tombstone() || !flags.has_extended_flags()) {
+                _header_end_pos = current_position(data) - 1;
+                _state = state::FINISHED;
+                return data_consumer::proceed::no;
+            }
+            if (read_8(data) != read_status::ready) {
+                _state = state::EXTENDED_FLAGS;
+                break;
             }
         }
-
-        // A static row is present.
-        // There are no clustering blocks. Read the row body size:
-        co_yield read_unsigned_vint(*_processing_data);
-        // skip the row body
-        _header_end_pos = current_position() + _u64;
-        // _header_end_pos is where the clustering rows start
-        co_yield data_consumer::proceed::no;
+        case state::EXTENDED_FLAGS: {
+            auto extended_flags = unfiltered_extended_flags_m(_u8);
+            if (!extended_flags.is_static()) {
+                _header_end_pos = current_position(data) - 2;
+                _state = state::FINISHED;
+                return data_consumer::proceed::no;
+            }
+            if (read_unsigned_vint(data) != read_status::ready) {
+                // A static row is present.
+                // There are no clustering blocks. Read the row body size:
+                _state = state::STATIC_ROW_SIZE;
+                break;
+            }
+        }
+        case state::STATIC_ROW_SIZE:
+            // skip the row body
+            _header_end_pos = current_position(data) + _u64;
+            _state = state::FINISHED;
+        case state::FINISHED:
+            // _header_end_pos is where the clustering rows start
+            return data_consumer::proceed::no;
+        }
+        return data_consumer::proceed::yes;
     }
-public:
 
     partition_header_context(input_stream<char>&& input, uint64_t start, uint64_t maxlen, reader_permit permit)
                 : continuous_data_consumer(std::move(permit), std::move(input), start, maxlen)
-                , _gen(do_process_state())
     {}
 };
 
@@ -128,10 +148,21 @@ public:
 // `row_body_skipping_context` does not handle the static row (if there is one in the partition),
 // only `unfiltered`s (clustering rows and tombstones).
 class row_body_skipping_context : public data_consumer::continuous_data_consumer<row_body_skipping_context> {
+    enum class state {
+        FLAGS,
+        FLAGS_2,
+        EXTENDED_FLAGS,
+        RANGE_TOMBSTONE_KIND,
+        RANGE_TOMBSTONE_SIZE,
+        CK_BLOCK_HEADER,
+        CK_BLOCK_END,
+        BODY_SIZE,
+        PREV_UNFILTERED_SIZE,
+        RANGE_TOMBSTONE_BODY_TIMESTAMP,
+        RANGE_TOMBSTONE_BODY_MARKED_FOR_DELETE_AT,
+        FINISHED_ROW
+    } _state = state::FLAGS;
     bool _end_of_partition = false;
-    bool _finished = false;
-    processing_result_generator _gen;
-    temporary_buffer<char>* _processing_data;
 
 public:
     struct tombstone_reversing_info {
@@ -154,16 +185,16 @@ public:
 private:
     unfiltered_flags_m _flags{0};
     std::optional<tombstone_reversing_info> _current_tombstone_reversing_info = std::nullopt;
+    uint64_t _next_row_offset;
     uint64_t _prev_unfiltered_size;
 
     // for calculating the clustering blocks
     boost::iterator_range<std::vector<std::optional<uint32_t>>::const_iterator> _ck_column_value_fix_lengths;
     uint64_t _ck_blocks_header;
     uint32_t _ck_blocks_header_offset;
-    bool _reading_range_tombstone_ck = false;
-    bool _reading_partition_ck = false;
     uint16_t _ck_size;
     column_translation _column_translation;
+    fragmented_temporary_buffer _column_value;
 
     void setup_ck(const std::vector<std::optional<uint32_t>>& column_value_fix_lengths) {
         if (column_value_fix_lengths.empty()) {
@@ -197,10 +228,10 @@ private:
 
 public:
     bool non_consuming() const {
-        return false;
+        return _state == state::FINISHED_ROW;
     }
     void verify_end_state() const {
-        if (!_finished) {
+        if (_state == state::FLAGS) {
             throw std::runtime_error("row_body_skipping_context - no more data but parsing is incomplete");
         }
     }
@@ -214,92 +245,142 @@ public:
         // std::nullopt if the last consumed unfiltered was not a tombstone
         return _current_tombstone_reversing_info;
     }
-    data_consumer::processing_result process_state(temporary_buffer<char>& data) {
-        _processing_data = &data;
-        auto ret = _gen.generate();
-        return ret;
-    }
 private:
-    uint64_t current_position() {
-        return position() - _processing_data->size();
+    uint64_t current_position(temporary_buffer<char>& data) {
+        return position() - data.size();
     }
-    processing_result_generator do_process_state() {
-        while (true) {
-            _finished = false;
-            co_yield read_8(*_processing_data);
+public:
+    data_consumer::processing_result process_state(temporary_buffer<char>& data) {
+        switch (_state) {
+        case state::FLAGS:
+            if (read_8(data) != read_status::ready) {
+                _state = state::FLAGS_2;
+                break;
+            }
+        case state::FLAGS_2: {
             auto flags = unfiltered_flags_m(_u8);
             _current_tombstone_reversing_info.reset();
             if (flags.is_end_of_partition()) {
                 _end_of_partition = true;
-                _finished = true;
-                co_yield data_consumer::proceed::no;
-                break;
+                _state = state::FLAGS;
+                return data_consumer::proceed::no;
             } else if (flags.is_range_tombstone()) {
                 _current_tombstone_reversing_info.emplace();
-                _current_tombstone_reversing_info->kind_offset = current_position();
-                co_yield read_8(*_processing_data);
-                _current_tombstone_reversing_info->range_tombstone_kind = bound_kind_m(_u8);
-                co_yield read_16(*_processing_data);
-                _ck_size = _u16;
-                if (_ck_size != 0) {
-                    _reading_range_tombstone_ck = true;
+                _current_tombstone_reversing_info->kind_offset = current_position(data);
+                if (read_8(data) != read_status::ready) {
+                    _state = state::RANGE_TOMBSTONE_KIND;
+                    break;
                 }
-            } else {
-                if (flags.has_extended_flags()) {
-                    // skip flags
-                    co_yield read_8(*_processing_data);
-                    // `row_body_skipping_context` should not be constructed on static rows
-                    auto extended_flags = unfiltered_extended_flags_m(_u8);
-                    assert(!extended_flags.is_static());
-                }
+                goto range_tombstone_kind_label;
+            } else if (!flags.has_extended_flags()) {
                 _ck_size = _column_translation.clustering_column_value_fix_legths().size();
-                _reading_partition_ck = true;
+                goto clustering_row_label;
             }
-            if (_reading_partition_ck || _reading_range_tombstone_ck) {
-                setup_ck(_column_translation.clustering_column_value_fix_legths());
-                while (!no_more_ck_blocks()) {
-                    if (should_read_block_header()) {
-                        co_yield read_unsigned_vint(*_processing_data);
-                        _ck_blocks_header = _u64;
-                    }
-                    if (is_block_null() || is_block_empty()) {
-                        move_to_next_ck_block();
-                        continue;
-                    }
-                    // possibly read the length of, and then skip the clustering cell
-                    if (auto len = get_ck_block_value_length()) {
-                        co_yield skip(*_processing_data, *len);
-                    } else {
-                        co_yield read_unsigned_vint(*_processing_data);
-                        co_yield skip(*_processing_data, _u64);
-                    }
-                    move_to_next_ck_block();
-                }
-                _reading_partition_ck = false;
-                _reading_range_tombstone_ck = false;
+            if (read_8(data) != read_status::ready) {
+                _state = state::EXTENDED_FLAGS;
+                break;
             }
-            co_yield read_unsigned_vint(*_processing_data);
-            // marker_body_size or row_body_size
-            uint64_t next_row_offset = current_position() + _u64;
-            co_yield read_unsigned_vint(*_processing_data);
-            _prev_unfiltered_size = _u64;
-            if (_current_tombstone_reversing_info) {
-                _current_tombstone_reversing_info->first_deletion_time_offset = current_position();
-                // skip delta_marked_for_delete_at and delta_local_deletion_time
-                co_yield read_unsigned_vint(*_processing_data);
-                co_yield read_unsigned_vint(*_processing_data);
-                _current_tombstone_reversing_info->after_first_deletion_time_offset = current_position();
-            }
-            _finished = true;
-            // skip until the next row, allowing to read consecutive rows in disk order
-            co_yield skip(*_processing_data, next_row_offset - current_position());
-            co_yield data_consumer::proceed::no;
         }
+        case state::EXTENDED_FLAGS: {
+            auto extended_flags = unfiltered_extended_flags_m(_u8);
+            // `row_body_skipping_context` should not be constructed on static rows
+            assert(!extended_flags.is_static());
+            _ck_size = _column_translation.clustering_column_value_fix_legths().size();
+            goto clustering_row_label;
+        }
+        case state::RANGE_TOMBSTONE_KIND:
+        range_tombstone_kind_label:
+            _current_tombstone_reversing_info->range_tombstone_kind = bound_kind_m(_u8);
+            if (read_16(data) != read_status::ready) {
+                _state = state::RANGE_TOMBSTONE_SIZE;
+                break;
+            }
+        case state::RANGE_TOMBSTONE_SIZE:
+            _ck_size = _u16;
+            if (_ck_size == 0) {
+                goto body_label;
+            }
+        clustering_row_label:
+            setup_ck(_column_translation.clustering_column_value_fix_legths());
+        ck_block_label:
+            if (no_more_ck_blocks()) {
+                goto body_label;
+            }
+            if (!should_read_block_header()) {
+                goto ck_block2_label;
+            }
+            if (read_unsigned_vint(data) != read_status::ready) {
+                _state = state::CK_BLOCK_HEADER;
+                break;
+            }
+        case state::CK_BLOCK_HEADER:
+            _ck_blocks_header = _u64;
+        ck_block2_label: {
+            if (is_block_null()) {
+                move_to_next_ck_block();
+                goto ck_block_label;
+            }
+            if (is_block_empty()) {
+                move_to_next_ck_block();
+                goto ck_block_label;
+            }
+            read_status status = read_status::waiting;
+            if (auto len = get_ck_block_value_length()) {
+                status = read_bytes(data, *len, _column_value);
+            } else {
+                status = read_unsigned_vint_length_bytes(data, _column_value);
+            }
+            if (status != read_status::ready) {
+                _state = state::CK_BLOCK_END;
+                break;
+            }
+        }
+        case state::CK_BLOCK_END:
+            move_to_next_ck_block();
+            goto ck_block_label;
+        body_label:
+            if (read_unsigned_vint(data) != read_status::ready) {
+                _state = state::BODY_SIZE;
+                break;
+            }
+        case state::BODY_SIZE:
+            _next_row_offset = current_position(data) + _u64;
+            if (read_unsigned_vint(data) != read_status::ready) {
+                _state = state::PREV_UNFILTERED_SIZE;
+                break;
+            }
+        case state::PREV_UNFILTERED_SIZE:
+            _prev_unfiltered_size = _u64;
+            if (!_current_tombstone_reversing_info) {
+                _state = state::FINISHED_ROW;
+                // skip until the next row, allowing to read consecutive rows in disk order
+                return skip(data, _next_row_offset - current_position(data));
+            }
+            _current_tombstone_reversing_info->first_deletion_time_offset = current_position(data);
+            if (read_unsigned_vint(data) != read_status::ready) {
+                _state = state::RANGE_TOMBSTONE_BODY_TIMESTAMP;
+                break;
+            }
+
+        case state::RANGE_TOMBSTONE_BODY_TIMESTAMP:
+            if (read_unsigned_vint(data) != read_status::ready) {
+                _state = state::RANGE_TOMBSTONE_BODY_MARKED_FOR_DELETE_AT;
+                break;
+            }
+        case state::RANGE_TOMBSTONE_BODY_MARKED_FOR_DELETE_AT:
+            _current_tombstone_reversing_info->after_first_deletion_time_offset = current_position(data);
+            _state = state::FINISHED_ROW;
+            // skip until the next row, allowing to read consecutive rows in disk order
+            return skip(data, _next_row_offset - current_position(data));
+        case state::FINISHED_ROW:
+            // extra state for stopping the reader after reading a row (we don't stop when skipping)
+            _state = state::FLAGS;
+            return data_consumer::proceed::no;
+        }
+        return data_consumer::proceed::yes;
     }
-public:
     row_body_skipping_context(input_stream<char>&& input, uint64_t start, uint64_t maxlen, reader_permit permit, column_translation ct)
                 : continuous_data_consumer(std::move(permit), std::move(input), start, maxlen)
-                , _gen(do_process_state())
                 , _column_translation(std::move(ct))
     {}
 };
