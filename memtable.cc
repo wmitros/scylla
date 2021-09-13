@@ -25,6 +25,7 @@
 #include "partition_snapshot_reader.hh"
 #include "partition_builder.hh"
 #include "mutation_partition_view.hh"
+#include "query-request.hh"
 
 void memtable::memtable_encoding_stats_collector::update_timestamp(api::timestamp_type ts) {
     if (ts != api::missing_timestamp) {
@@ -395,6 +396,7 @@ class scanning_reader final : public flat_mutation_reader::impl, private iterato
     std::optional<dht::partition_range> _delegate_range;
     flat_mutation_reader_opt _delegate;
     const io_priority_class& _pc;
+    std::optional<query::partition_slice> _fixed_slice;
     const query::partition_slice& _slice;
     mutation_reader::forwarding _fwd_mr;
 
@@ -429,13 +431,15 @@ public:
                      lw_shared_ptr<memtable> m,
                      reader_permit permit,
                      const dht::partition_range& range,
-                     const query::partition_slice& slice,
+                     std::optional<query::partition_slice> fixed_slice,
+                     const query::partition_slice& query_slice,
                      const io_priority_class& pc,
                      mutation_reader::forwarding fwd_mr)
          : impl(s, std::move(permit))
          , iterator_reader(s, std::move(m), range)
          , _pc(pc)
-         , _slice(slice)
+         , _fixed_slice(std::move(fixed_slice))
+         , _slice(_fixed_slice ? *_fixed_slice : query_slice)
          , _fwd_mr(fwd_mr)
      { }
 
@@ -463,6 +467,7 @@ public:
                     if (key_and_snp) {
                         update_last(key_and_snp->first);
                         auto cr = query::clustering_key_filter_ranges::get_ranges(*schema(), _slice, key_and_snp->first.key());
+
                         auto snp_schema = key_and_snp->second->schema();
                         bool digest_requested = _slice.options.contains<query::partition_slice::option::with_digest>();
                         auto mpsr = make_partition_snapshot_flat_reader<partition_snapshot_read_accounter>(snp_schema, _permit, std::move(key_and_snp->first), std::move(cr),
@@ -702,7 +707,13 @@ memtable::make_flat_reader(schema_ptr s,
         rd.upgrade_schema(s);
         return rd;
     } else {
-        auto res = make_flat_mutation_reader<scanning_reader>(std::move(s), shared_from_this(), std::move(permit), range, slice, pc, fwd_mr);
+        std::optional<query::partition_slice> fixed_slice;
+        if (slice.options.contains(query::partition_slice::option::reversed)) {
+            fixed_slice = half_reverse_slice(*s, slice);
+        }
+
+        auto res = make_flat_mutation_reader<scanning_reader>(std::move(s), shared_from_this(), std::move(permit),
+                range, std::move(fixed_slice), slice, pc, fwd_mr);
         if (fwd == streamed_mutation::forwarding::yes) {
             return make_forwardable(std::move(res));
         } else {
@@ -718,7 +729,7 @@ memtable::make_flush_reader(schema_ptr s, reader_permit permit, const io_priorit
     } else {
         auto& full_slice = s->full_slice();
         return make_flat_mutation_reader<scanning_reader>(std::move(s), shared_from_this(), std::move(permit),
-            query::full_partition_range, full_slice, pc, mutation_reader::forwarding::no);
+            query::full_partition_range, std::nullopt, full_slice, pc, mutation_reader::forwarding::no);
     }
 }
 
