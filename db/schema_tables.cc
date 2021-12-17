@@ -72,6 +72,7 @@
 #include "db/system_keyspace.hh"
 #include "cql3/untyped_result_set.hh"
 #include "cql3/functions/user_aggregate.hh"
+#include "utils/base64.hh"
 
 using namespace db;
 using namespace std::chrono_literals;
@@ -1596,6 +1597,14 @@ static shared_ptr<cql3::functions::user_function> create_func(replica::database&
     } else if (language == "xwasm") {
        wasm::context ctx{db.wasm_engine(), name.name};
         wasm::compile(ctx, arg_names, body);
+        return ::make_shared<cql3::functions::user_function>(std::move(name), std::move(arg_types), std::move(arg_names),
+                std::move(body), language, std::move(return_type),
+                row.get_nonnull<bool>("called_on_null_input"), std::move(ctx));
+    } else if (language == "xwasm64") {
+       wasm::context ctx{db.wasm_engine(), name.name};
+        bytes decoded = base64_decode(body); 
+        std::span<unsigned char> bytebody((basic_sstring<uint8_t, uint32_t, 31, false>::iterator)decoded.begin(), decoded.size());
+        wasm::compile(ctx, arg_names, bytebody);
         return ::make_shared<cql3::functions::user_function>(std::move(name), std::move(arg_types), std::move(arg_names),
                 std::move(body), language, std::move(return_type),
                 row.get_nonnull<bool>("called_on_null_input"), std::move(ctx));

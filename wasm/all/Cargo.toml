@@ -1,0 +1,9 @@
+[workspace]
+
+members = [
+    "base",
+    "bindgen",
+    "commas",
+    "dbl",
+    "top3",
+]

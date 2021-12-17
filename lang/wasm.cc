@@ -17,6 +17,7 @@
 #include <seastar/core/byteorder.hh>
 #include <seastar/core/coroutine.hh>
 #include <seastar/util/defer.hh>
+#include <span>
 #include "seastarx.hh"
 
 static logging::logger wasm_logger("wasm");
@@ -152,6 +153,7 @@ static void init_abstract_arg(const abstract_type& t, const bytes_opt& param, st
 }
 
 struct init_arg_visitor {
+    // FIXME
     const bytes_opt& param;
     std::vector<wasmtime::Val>& argv;
     wasmtime::Store& store;
@@ -290,13 +292,15 @@ struct from_val_visitor {
 seastar::future<bytes_opt> run_script(context& ctx, const std::vector<data_type>& arg_types, const std::vector<bytes_opt>& params, data_type return_type, bool allow_null_input) {
     wasm_logger.debug("Running function {}", ctx.function_name);
 
+    auto start_tp = std::chrono::system_clock::now();
     auto store = wasmtime::Store(ctx.engine_ptr->get());
     // Replenish the store with initial amount of fuel
-    auto added = store.context().add_fuel(ctx.engine_ptr->initial_fuel_amount());
+    auto added = store.context().add_fuel(10000*ctx.engine_ptr->initial_fuel_amount());
     if (!added) {
         co_return coroutine::make_exception(wasm::exception(added.err().message()));
     }
     auto [instance, func] = create_instance_and_func(ctx, store);
+
     std::vector<wasmtime::Val> argv;
     for (size_t i = 0; i < arg_types.size(); ++i) {
         const abstract_type& type = *arg_types[i];
@@ -323,7 +327,7 @@ seastar::future<bytes_opt> run_script(context& ctx, const std::vector<data_type>
     }
     std::vector<wasmtime::Val> result_vec = std::move(result).unwrap();
     if (result_vec.size() != 1) {
-      co_return coroutine::make_exception(wasm::exception(format("Unexpected number of returned values: {} (expected: 1)", result_vec.size())));
+    co_return coroutine::make_exception(wasm::exception(format("Unexpected number of returned values: {} (expected: 1)", result_vec.size())));
     }
 
     // TODO: ABI for return values is experimental and subject to change in the future.
@@ -346,6 +350,7 @@ seastar::future<bytes_opt> run_script(context& ctx, const std::vector<data_type>
     } else {
         co_return visit(*return_type, from_val_visitor{result_vec[0], store, instance});
     }
+    co_return coroutine::make_exception(wasm::exception(format("error")));
 }
 
 }

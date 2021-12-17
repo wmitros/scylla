@@ -17,6 +17,8 @@
 #include "data_dictionary/data_dictionary.hh"
 #include "replica/database.hh" // for wasm
 #include "cql3/query_processor.hh"
+#include "utils/base64.hh"
+#include <span>
 
 namespace cql3 {
 
@@ -26,7 +28,7 @@ shared_ptr<functions::function> create_function_statement::create(query_processo
     if (old && !dynamic_cast<functions::user_function*>(old)) {
         throw exceptions::invalid_request_exception(format("Cannot replace '{}' which is not a user defined function", *old));
     }
-    if (_language != "lua" && _language != "xwasm") {
+    if (_language != "lua" && _language != "xwasm" && _language != "xwasm64") {
         throw exceptions::invalid_request_exception(format("Language '{}' is not supported", _language));
     }
     data_type return_type = prepare_type(qp, *_return_type);
@@ -50,6 +52,18 @@ shared_ptr<functions::function> create_function_statement::create(query_processo
        wasm::context ctx{db.real_database().wasm_engine(), _name.name};
        try {
             wasm::compile(ctx, arg_names, _body);
+            return ::make_shared<functions::user_function>(_name, _arg_types, std::move(arg_names), _body, _language,
+                std::move(return_type), _called_on_null_input, std::move(ctx));
+       } catch (const wasm::exception& we) {
+           throw exceptions::invalid_request_exception(we.what());
+       }
+    } else if (_language == "xwasm64") {
+       // FIXME: need better way to test wasm compilation without real_database()
+       wasm::context ctx{db.real_database().wasm_engine(), _name.name};
+       try {
+            bytes decoded = base64_decode(_body); 
+            std::span<unsigned char> body((basic_sstring<uint8_t, uint32_t, 31, false>::iterator)decoded.begin(), decoded.size());
+            wasm::compile(ctx, arg_names, body);
             return ::make_shared<functions::user_function>(_name, _arg_types, std::move(arg_names), _body, _language,
                 std::move(return_type), _called_on_null_input, std::move(ctx));
        } catch (const wasm::exception& we) {
