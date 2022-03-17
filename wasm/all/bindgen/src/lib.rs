@@ -40,16 +40,16 @@ pub fn scylla_bindgen(attrs: TokenStream, item: TokenStream) -> TokenStream {
         }
         let exprstr = exp.into_token_stream().to_string();
         let retexp = parse_str::<syn::Expr>(&format!("{}.into_cql()", exprstr)).expect("code generation error");
-        // let mut tmpcall = parse_str::<syn::Expr>("u64::from()").expect("code generation error");
-        // if let &mut syn::Expr::Call(ref mut tc) = &mut tmpcall {
-        //     tc.args.push(exp);
-        // }
-        // block.stmts.push(Stmt::from(Stmt::Expr(tmpcall)));
         block.stmts.push(Stmt::from(Stmt::Expr(retexp)));
         let mut ts0 = TokenStream::from(quote! {
             extern crate base;
             use crate::base::*;
         });
+        let ts05 = TokenStream::from(quote! {
+            #[no_mangle]
+            pub static _scylla_abi: u32 = 1;
+        });
+        ts0.extend(ts05.into_iter());
         let mut ts = TokenStream::from_iter(attrs);
         let ts2 = TokenStream::from(quote! {
                 #decl1
