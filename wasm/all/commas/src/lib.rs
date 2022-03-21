@@ -7,7 +7,7 @@ fn commas(strings: Vec<String>) -> String {
         newstr.push_str(&s);
     }
     while let Some(s) = it.next() {
-        newstr.push_str("| ");
+        newstr.push_str(", ");
         newstr.push_str(&s);
     }
     newstr

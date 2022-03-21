@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeSet, BTreeMap};
 extern "C" {
     fn malloc(size: usize) -> usize;
     fn free(ptr: *mut usize);
@@ -82,7 +82,7 @@ impl<T: FromCQL> FromCQL for Vec<T> {
         for _ in 0..length {
             let siz = u32::from_be(unsafe {*(curr_ptr as *const u32)});
             curr_ptr += 4;
-            vec.push(T::from_cql(size_ptr(siz, curr_ptr)));
+            vec.push(T::deserialize_cql(size_ptr(siz, curr_ptr)));
             curr_ptr += siz;
         }
         if curr_ptr != (ptr as u32) + size as u32 {
@@ -124,11 +124,11 @@ impl<K: FromCQL + std::cmp::Ord, V: FromCQL> FromCQL for BTreeMap<K,V> {
         for _ in 0..length {
             let siz = u32::from_be(unsafe {*(curr_ptr as *const u32)});
             curr_ptr += 4;
-            let key = K::from_cql(size_ptr(siz, curr_ptr));
+            let key = K::deserialize_cql(size_ptr(siz, curr_ptr));
             curr_ptr += siz;
             let siz = u32::from_be(unsafe {*(curr_ptr as *const u32)});
             curr_ptr += 4;
-            let val = V::from_cql(size_ptr(siz, curr_ptr));
+            let val = V::deserialize_cql(size_ptr(siz, curr_ptr));
             curr_ptr += siz;
             map.insert(key, val);
         }
@@ -138,6 +138,48 @@ impl<K: FromCQL + std::cmp::Ord, V: FromCQL> FromCQL for BTreeMap<K,V> {
         map
     }
 }
+impl<T: FromCQL + std::cmp::Ord> FromCQL for BTreeSet<T> {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let size = (sizeptr >> 32) as usize;
+        let ptr = (sizeptr & 0xffffffff) as *mut u8;
+        let mut vec = BTreeSet::new();
+        let length = u32::from_be(unsafe {*(ptr as *const u32)});
+        let mut curr_ptr = (ptr as u32) + 4;
+        for _ in 0..length {
+            let siz = u32::from_be(unsafe {*(curr_ptr as *const u32)});
+            curr_ptr += 4;
+            vec.insert(T::deserialize_cql(size_ptr(siz, curr_ptr)));
+            curr_ptr += siz;
+        }
+        if curr_ptr != (ptr as u32) + size as u32 {
+            panic!("data has different size than specified")
+        }
+        vec
+    }
+}
+
+impl<T: IntoCQL + std::cmp::Ord> IntoCQL for BTreeSet<T> {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        let length = self.len() as u32;
+        dest[0..4].copy_from_slice(&length.to_be_bytes());
+        let mut offset = 4;
+        for it in self.iter() {
+            let siz = it.size_cql() as u32;
+            dest[offset..(offset+4)].copy_from_slice(&siz.to_be_bytes());
+            offset += 4;
+            it.serialize_cql(&mut dest[offset..(offset+(siz as usize))]);
+            offset += siz as usize;
+        }
+    }
+    fn size_cql(&self) -> usize {
+        let mut ret : usize = 4;
+        for it in self.iter() {
+            ret += 4 + it.size_cql();
+        }
+        ret
+    }
+}
+
 
 impl<K: IntoCQL + std::cmp::Ord, V: IntoCQL> IntoCQL for BTreeMap<K,V> {
     fn serialize_cql(&self, dest: &mut [u8]) {
@@ -166,3 +208,43 @@ impl<K: IntoCQL + std::cmp::Ord, V: IntoCQL> IntoCQL for BTreeMap<K,V> {
         ret
     }
 }
+
+// impl<T: FromCQL> FromCQL for Option<T> {
+//     fn deserialize_cql(sizeptr: u64) -> Self {
+//         let size = (sizeptr >> 32) as usize;
+//         let ptr = (sizeptr & 0xffffffff) as *mut u8;
+//         if size == -1 {
+//             None
+//         } else {
+//             T::deserialize_cql(sizeptr)
+//         }
+//     }
+// }
+
+// impl<T: IntoCQL> IntoCQL for Option<T> {
+//     fn serialize_cql(&self, dest: &mut [u8]) {
+//         if let None = *self {
+
+//         }
+//         let length = self.len() as u32;
+//         dest[0..4].copy_from_slice(&length.to_be_bytes());
+//         let mut offset = 4;
+//         for it in self.iter() {
+//             let siz = it.size_cql() as u32;
+//             dest[offset..(offset+4)].copy_from_slice(&siz.to_be_bytes());
+//             offset += 4;
+//             it.serialize_cql(&mut dest[offset..(offset+(siz as usize))]);
+//             offset += siz as usize;
+//         }
+//     }
+//     fn size_cql(&self) -> usize {
+//         if let None = *self {
+            
+//         }
+//         let mut ret : usize = 4;
+//         for it in self.iter() {
+//             ret += 4 + it.size_cql();
+//         }
+//         ret
+//     }
+// }

@@ -6,4 +6,6 @@ members = [
     "commas",
     "dbl",
     "top3",
+    "keys",
+    "values",
 ]
