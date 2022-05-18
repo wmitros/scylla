@@ -9,4 +9,6 @@ members = [
     "keys",
     "values",
     "len",
+    "sum",
+    "div",
 ]
