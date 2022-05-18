@@ -1,8 +1,8 @@
 use scylla_bindgen::scylla_bindgen;
 #[scylla_bindgen]
-fn div(sumlen: (u32, u32)) -> f32 {
-    if sumlen.1 == 0 {
+fn div(sumlen: u64) -> f32 {
+    if sumlen < 4294967296 {
         return 0.0;
     }
-    sumlen.0 as f32/sumlen.1 as f32
+    (sumlen & 0xFFFFFFFF) as f32 / (sumlen >> 32) as f32
 }

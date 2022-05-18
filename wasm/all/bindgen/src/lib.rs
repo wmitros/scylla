@@ -92,7 +92,7 @@ pub fn scylla_bindgen(attrs: TokenStream, item: TokenStream) -> TokenStream {
         });
         let ts05 = TokenStream::from(quote! {
             #[no_mangle]
-            pub static _scylla_abi: u32 = 1;
+            pub static _scylla_abi: u32 = 2;
         });
         ts0.extend(ts05.into_iter());
         let mut ts = TokenStream::from_iter(attrs);
