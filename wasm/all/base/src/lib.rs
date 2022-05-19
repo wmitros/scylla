@@ -127,19 +127,67 @@ impl<T: FromCQL, U: FromCQL> FromCQL for (T, U) {
 impl<T: IntoCQL, U: IntoCQL> IntoCQL for (T, U) {
     fn serialize_cql(&self, dest: &mut [u8]) {
         let mut offset = 0;
-        let siz1 = self.0.size_cql() as u32;
+        let siz0 = self.0.size_cql() as u32;
+        dest[offset..(offset+4)].copy_from_slice(&siz0.to_be_bytes());
+        offset += 4;
+        self.0.serialize_cql(&mut dest[offset..(offset+(siz0 as usize))]);
+        offset += siz0 as usize;
+
+        let siz1 = self.1.size_cql() as u32;
         dest[offset..(offset+4)].copy_from_slice(&siz1.to_be_bytes());
         offset += 4;
-        self.0.serialize_cql(&mut dest[offset..(offset+(siz1 as usize))]);
-        offset += siz1 as usize;
-
-        let siz2 = self.1.size_cql() as u32;
-        dest[offset..(offset+4)].copy_from_slice(&siz2.to_be_bytes());
-        offset += 4;
-        self.1.serialize_cql(&mut dest[offset..(offset+(siz2 as usize))]);
+        self.1.serialize_cql(&mut dest[offset..(offset+(siz1 as usize))]);
     }
     fn size_cql(&self) -> usize {
         8 + self.0.size_cql() + self.1.size_cql()
+    }
+}
+impl<T: FromCQL, U: FromCQL, V: FromCQL> FromCQL for (T, U, V) {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let size = (sizeptr >> 32) as u32;
+        let ptr = (sizeptr & 0xffffffff) as *mut u8;
+        let mut curr_ptr = ptr as u32;
+        let siz = u32::from_be(unsafe {*(curr_ptr as *const u32)});
+        curr_ptr += 4;
+        let t = T::deserialize_cql(size_ptr(siz, curr_ptr));
+        curr_ptr += siz;
+        let siz = u32::from_be(unsafe {*(curr_ptr as *const u32)});
+        curr_ptr += 4;
+        let u = U::deserialize_cql(size_ptr(siz, curr_ptr));
+        curr_ptr += siz;
+        let siz = u32::from_be(unsafe {*(curr_ptr as *const u32)});
+        curr_ptr += 4;
+        let v = V::deserialize_cql(size_ptr(siz, curr_ptr));
+        curr_ptr += siz;
+        if curr_ptr != (ptr as u32) + size {
+            panic!("data has different size than specified")
+        }
+        (t, u, v)
+    }
+}
+
+impl<T: IntoCQL, U: IntoCQL, V: IntoCQL> IntoCQL for (T, U, V) {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        let mut offset = 0;
+        let siz0 = self.0.size_cql() as u32;
+        dest[offset..(offset+4)].copy_from_slice(&siz0.to_be_bytes());
+        offset += 4;
+        self.0.serialize_cql(&mut dest[offset..(offset+(siz0 as usize))]);
+        offset += siz0 as usize;
+
+        let siz1 = self.1.size_cql() as u32;
+        dest[offset..(offset+4)].copy_from_slice(&siz1.to_be_bytes());
+        offset += 4;
+        self.1.serialize_cql(&mut dest[offset..(offset+(siz1 as usize))]);
+        offset += siz1 as usize;
+
+        let siz2 = self.2.size_cql() as u32;
+        dest[offset..(offset+4)].copy_from_slice(&siz2.to_be_bytes());
+        offset += 4;
+        self.2.serialize_cql(&mut dest[offset..(offset+(siz2 as usize))]);
+    }
+    fn size_cql(&self) -> usize {
+        12 + self.0.size_cql() + self.1.size_cql() + self.2.size_cql()
     }
 }
 
