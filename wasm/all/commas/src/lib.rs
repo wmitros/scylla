@@ -1,14 +1,8 @@
 use scylla_bindgen::scylla_bindgen;
 #[scylla_bindgen]
-fn commas(strings: Vec<String>) -> String {
-    let mut newstr = String::new();
-    let mut it = strings.iter();
-    if let Some(s) = it.next() {
-        newstr.push_str(&s);
+fn commas(strings: Option<Vec<String>>) -> Option<String> {
+    match strings {
+        None => None,
+        Some(actual) => Some(actual.join(", ")),
     }
-    while let Some(s) = it.next() {
-        newstr.push_str(", ");
-        newstr.push_str(&s);
-    }
-    newstr
 }

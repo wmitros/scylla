@@ -8,4 +8,5 @@ members = [
     "top3",
     "keys",
     "values",
+    "len",
 ]

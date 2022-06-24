@@ -13,16 +13,6 @@ pub unsafe extern "C" fn _scylla_free(ptr: *mut usize) {
     free(ptr)
 }
 
-pub fn swap_int32(val: u32) -> u32 {
-    (val >> 24) | ((val & 0x00ff0000) >> 8) | ((val & 0x0000ff00) << 8) | (val << 24)
-}
-
-pub fn swap_int64(val: u64) -> u64 {
-    let mut val = ((val << 8) & 0xFF00FF00FF00FF00u64 ) | ((val >> 8) & 0x00FF00FF00FF00FFu64 );
-    val = ((val << 16) & 0xFFFF0000FFFF0000u64 ) | ((val >> 16) & 0x0000FFFF0000FFFFu64 );
-    (val << 32) | (val >> 32)
-}
-
 fn size_ptr(size: u32, ptr: u32) -> u64 {
     ((size as u64) << 32) + ptr as u64
 }
@@ -209,42 +199,217 @@ impl<K: IntoCQL + std::cmp::Ord, V: IntoCQL> IntoCQL for BTreeMap<K,V> {
     }
 }
 
-// impl<T: FromCQL> FromCQL for Option<T> {
-//     fn deserialize_cql(sizeptr: u64) -> Self {
-//         let size = (sizeptr >> 32) as usize;
-//         let ptr = (sizeptr & 0xffffffff) as *mut u8;
-//         if size == -1 {
-//             None
-//         } else {
-//             T::deserialize_cql(sizeptr)
-//         }
-//     }
-// }
+impl<T: FromCQL> FromCQL for Option<T> {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let size = (sizeptr >> 32) as i32;
+        if (size) == -1 {
+            None
+        } else {
+            Some(T::deserialize_cql(sizeptr))
+        }
+    }
+}
 
-// impl<T: IntoCQL> IntoCQL for Option<T> {
-//     fn serialize_cql(&self, dest: &mut [u8]) {
-//         if let None = *self {
+impl<T: IntoCQL> IntoCQL for Option<T> {
+    fn into_cql(&self) -> u64 {
+        match &*self {
+            None => {size_ptr(1_u32.wrapping_neg(), 0)},
+            Some(v) => {v.into_cql()},
+        }
+    }
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        match &*self {
+            None => {return;},
+            Some(v) => {v.serialize_cql(dest)},
+        }
+    }
+    fn size_cql(&self) -> usize {
+        match &*self {
+            None => {0},
+            Some(v) => {v.size_cql()},
+        }
+    }
+}
 
-//         }
-//         let length = self.len() as u32;
-//         dest[0..4].copy_from_slice(&length.to_be_bytes());
-//         let mut offset = 4;
-//         for it in self.iter() {
-//             let siz = it.size_cql() as u32;
-//             dest[offset..(offset+4)].copy_from_slice(&siz.to_be_bytes());
-//             offset += 4;
-//             it.serialize_cql(&mut dest[offset..(offset+(siz as usize))]);
-//             offset += siz as usize;
-//         }
-//     }
-//     fn size_cql(&self) -> usize {
-//         if let None = *self {
-            
-//         }
-//         let mut ret : usize = 4;
-//         for it in self.iter() {
-//             ret += 4 + it.size_cql();
-//         }
-//         ret
-//     }
-// }
+impl FromCQL for i8 {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let ptr = (sizeptr & 0xffffffff) as *mut i8;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, 1) };
+        slice[0]
+    }
+}
+impl FromCQL for i16 {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let ptr = (sizeptr & 0xffffffff) as *mut i16;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, 1) };
+        i16::from_be(slice[0])
+    }
+}
+impl FromCQL for i32 {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let ptr = (sizeptr & 0xffffffff) as *mut i32;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, 1) };
+        i32::from_be(slice[0])
+    }
+}
+impl FromCQL for i64 {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let ptr = (sizeptr & 0xffffffff) as *mut i64;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, 1) };
+        i64::from_be(slice[0])
+    }
+}
+impl FromCQL for u8 {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let ptr = (sizeptr & 0xffffffff) as *mut u8;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, 1) };
+        slice[0]
+    }
+}
+impl FromCQL for u16 {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let ptr = (sizeptr & 0xffffffff) as *mut u16;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, 1) };
+        u16::from_be(slice[0])
+    }
+}
+impl FromCQL for u32 {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let ptr = (sizeptr & 0xffffffff) as *mut u32;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, 1) };
+        u32::from_be(slice[0])
+    }
+}
+impl FromCQL for u64 {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let ptr = (sizeptr & 0xffffffff) as *mut u64;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, 1) };
+        u64::from_be(slice[0])
+    }
+}
+impl FromCQL for f32 {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let ptr = (sizeptr & 0xffffffff) as *mut f32;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, 1) };
+        f32::from_be_bytes(slice[0].to_bits().to_ne_bytes())
+    }
+}
+impl FromCQL for f64 {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let ptr = (sizeptr & 0xffffffff) as *mut f64;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, 1) };
+        f64::from_be_bytes(slice[0].to_bits().to_ne_bytes())
+    }
+}
+impl FromCQL for bool {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let ptr = (sizeptr & 0xffffffff) as *mut bool;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, 1) };
+        slice[0]
+    }
+}
+impl FromCQL for char {
+    fn deserialize_cql(sizeptr: u64) -> Self {
+        let ptr = (sizeptr & 0xffffffff) as *mut char;
+        let slice = unsafe { std::slice::from_raw_parts(ptr, 1) };
+        slice[0]
+    }
+}
+
+
+impl IntoCQL for i8 {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        dest[0..self.size_cql()].copy_from_slice(&self.to_be_bytes());
+    }
+    fn size_cql(&self) -> usize {
+        1
+    }
+}
+impl IntoCQL for i16 {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        dest[0..self.size_cql()].copy_from_slice(&self.to_be_bytes());
+    }
+    fn size_cql(&self) -> usize {
+        2
+    }
+}
+impl IntoCQL for i32 {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        dest[0..self.size_cql()].copy_from_slice(&self.to_be_bytes());
+    }
+    fn size_cql(&self) -> usize {
+        4
+    }
+}
+impl IntoCQL for i64 {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        dest[0..self.size_cql()].copy_from_slice(&self.to_be_bytes());
+    }
+    fn size_cql(&self) -> usize {
+        8
+    }
+}
+impl IntoCQL for u8 {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        dest[0..self.size_cql()].copy_from_slice(&self.to_be_bytes());
+    }
+    fn size_cql(&self) -> usize {
+        1
+    }
+}
+impl IntoCQL for u16 {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        dest[0..self.size_cql()].copy_from_slice(&self.to_be_bytes());
+    }
+    fn size_cql(&self) -> usize {
+        2
+    }
+}
+impl IntoCQL for u32 {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        dest[0..self.size_cql()].copy_from_slice(&self.to_be_bytes());
+    }
+    fn size_cql(&self) -> usize {
+        4
+    }
+}
+impl IntoCQL for u64 {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        dest[0..self.size_cql()].copy_from_slice(&self.to_be_bytes());
+    }
+    fn size_cql(&self) -> usize {
+        8
+    }
+}
+impl IntoCQL for f32 {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        dest[0..self.size_cql()].copy_from_slice(&self.to_be_bytes());
+    }
+    fn size_cql(&self) -> usize {
+        4
+    }
+}
+impl IntoCQL for f64 {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        dest[0..self.size_cql()].copy_from_slice(&self.to_be_bytes());
+    }
+    fn size_cql(&self) -> usize {
+        8
+    }
+}
+impl IntoCQL for bool {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        dest[0..self.size_cql()].copy_from_slice(&(*self as u8).to_be_bytes());
+    }
+    fn size_cql(&self) -> usize {
+        1
+    }
+}
+impl IntoCQL for char {
+    fn serialize_cql(&self, dest: &mut [u8]) {
+        dest[0..self.size_cql()].copy_from_slice(&(*self as u8).to_be_bytes());
+    }
+    fn size_cql(&self) -> usize {
+        1
+    }
+}
