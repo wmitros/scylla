@@ -110,23 +110,23 @@ class ManagerClient():
 
     async def server_stop(self, server_id: str) -> bool:
         """Stop specified node"""
-        ret = await self._request(f"http://localhost/cluster/node/{server_id}/stop")
+        ret = await self._request(f"http://localhost/cluster/server/{server_id}/stop")
         return ret == "OK"
 
     async def server_stop_gracefully(self, server_id: str) -> bool:
         """Stop specified node gracefully"""
-        ret = await self._request(f"http://localhost/cluster/node/{server_id}/stop_gracefully")
+        ret = await self._request(f"http://localhost/cluster/server/{server_id}/stop_gracefully")
         return ret == "OK"
 
     async def server_start(self, server_id: str) -> bool:
         """Start specified node"""
-        ret = await self._request(f"http://localhost/cluster/node/{server_id}/start")
+        ret = await self._request(f"http://localhost/cluster/server/{server_id}/start")
         self._driver_update()
         return ret == "OK"
 
     async def server_restart(self, server_id: str) -> bool:
         """Restart specified node"""
-        ret = await self._request(f"http://localhost/cluster/node/{server_id}/restart")
+        ret = await self._request(f"http://localhost/cluster/server/{server_id}/restart")
         self._driver_update()
         return ret == "OK"
 
