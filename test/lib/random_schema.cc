@@ -139,6 +139,10 @@ private:
         const auto count = count_dist(engine);
         for (size_t c = 0; c < count; ++c) {
             auto type = _type_generator(engine, multi_cell);
+            while (!multi_cell && type == duration_type) {
+                // duration_type not allowed for primary key component
+                type = _type_generator(engine, multi_cell);
+            }
             if (reversed_dist(engine)) {
                 types.emplace_back(make_shared<reversed_type_impl>(std::move(type)));
             } else {
