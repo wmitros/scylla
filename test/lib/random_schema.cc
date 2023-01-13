@@ -1070,14 +1070,16 @@ future<std::vector<mutation>> generate_random_mutations(
             continue;
         }
 
-        auto ckeys = random_schema.make_ckeys(clustering_row_count_dist(engine));
-        const auto clustering_row_count = ckeys.size();
+        const auto clustering_row_count = clustering_row_count_dist(engine);
+        const auto range_tombstone_count = range_tombstone_count_dist(engine);
+        auto ckeys = random_schema.make_ckeys(std::max(clustering_row_count, range_tombstone_count));
+
         for (uint32_t ck = 0; ck < clustering_row_count; ++ck) {
             random_schema.add_row(engine, mut, ckeys[ck], ts_gen, exp_gen);
             co_await coroutine::maybe_yield();
         }
 
-        for (size_t i = 0; i < 4; ++i) {
+        for (size_t i = 0; i < range_tombstone_count; ++i) {
             const auto a = tests::random::get_int<size_t>(0, ckeys.size() - 1, engine);
             const auto b = tests::random::get_int<size_t>(0, ckeys.size() - 1, engine);
             random_schema.delete_range(
