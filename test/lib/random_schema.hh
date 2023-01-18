@@ -42,11 +42,7 @@ public:
 /// Can be used to implement concrete random schema specifications.
 /// TODO: counters
 class type_generator {
-public:
-    using is_multi_cell = bool_class<class is_multi_cell_tag>;
-
-private:
-    using generator = std::function<data_type(std::mt19937&, is_multi_cell)>;
+    using generator = std::function<data_type(std::mt19937&, column_kind, bool)>;
 
 private:
     random_schema_specification& _spec;
@@ -57,7 +53,7 @@ public:
     // This is captured.
     type_generator(type_generator&&) = delete;
 
-    data_type operator()(std::mt19937& engine, is_multi_cell multi_cell);
+    data_type operator()(std::mt19937& engine, column_kind kind, bool is_multi_cell);
 };
 
 /// The default random schema specification.

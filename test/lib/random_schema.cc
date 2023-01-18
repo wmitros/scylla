@@ -30,7 +30,7 @@ namespace tests {
 type_generator::type_generator(random_schema_specification& spec) : _spec(spec) {
     struct simple_type_generator {
         data_type type;
-        data_type operator()(std::mt19937&, is_multi_cell) { return type; }
+        data_type operator()(std::mt19937&, column_kind, bool) { return type; }
     };
     _generators = {
         simple_type_generator{byte_type},
@@ -56,18 +56,18 @@ type_generator::type_generator(random_schema_specification& spec) : _spec(spec) 
 
     // tuple
     _generators.emplace_back(
-        [this] (std::mt19937& engine, is_multi_cell) {
+        [this] (std::mt19937& engine, column_kind kind, bool) {
             std::uniform_int_distribution<size_t> count_dist{2, 4};
             const auto count = count_dist(engine);
             std::vector<data_type> data_types;
             for (size_t i = 0; i < count; ++i) {
-                data_types.emplace_back((*this)(engine, type_generator::is_multi_cell::no));
+                data_types.emplace_back((*this)(engine, kind, false));
             }
             return tuple_type_impl::get_instance(std::move(data_types));
         });
     // user
     _generators.emplace_back(
-        [this] (std::mt19937& engine, is_multi_cell multi_cell) mutable {
+        [this] (std::mt19937& engine, column_kind kind, bool is_multi_cell) mutable {
             std::uniform_int_distribution<size_t> count_dist{2, 4};
             const auto count = count_dist(engine);
 
@@ -75,36 +75,46 @@ type_generator::type_generator(random_schema_specification& spec) : _spec(spec) 
             std::vector<data_type> field_types;
             for (size_t i = 0; i < count; ++i) {
                 field_names.emplace_back(to_bytes(format("f{}", i)));
-                field_types.emplace_back((*this)(engine, type_generator::is_multi_cell::no));
+                field_types.emplace_back((*this)(engine, kind, false));
             }
 
             return user_type_impl::get_instance(_spec.keyspace_name(), to_bytes(_spec.udt_name(engine)), std::move(field_names),
-                    std::move(field_types), bool(multi_cell));
+                    std::move(field_types), is_multi_cell);
         });
     // list
     _generators.emplace_back(
-        [this] (std::mt19937& engine, is_multi_cell multi_cell) {
-            auto element_type = (*this)(engine, type_generator::is_multi_cell::no);
-            return list_type_impl::get_instance(std::move(element_type), bool(multi_cell));
+        [this] (std::mt19937& engine, column_kind kind, bool is_multi_cell) {
+            auto element_type = (*this)(engine, kind, false);
+            return list_type_impl::get_instance(std::move(element_type), is_multi_cell);
         });
     // set
     _generators.emplace_back(
-        [this] (std::mt19937& engine, is_multi_cell multi_cell) {
-            auto element_type = (*this)(engine, type_generator::is_multi_cell::no);
-            return set_type_impl::get_instance(std::move(element_type), bool(multi_cell));
+        [this] (std::mt19937& engine, column_kind kind, bool is_multi_cell) {
+            auto element_type = (*this)(engine, kind, false);
+            return set_type_impl::get_instance(std::move(element_type), is_multi_cell);
         });
     // map
     _generators.emplace_back(
-        [this] (std::mt19937& engine, is_multi_cell multi_cell) {
-            auto key_type = (*this)(engine, type_generator::is_multi_cell::no);
-            auto value_type = (*this)(engine, type_generator::is_multi_cell::no);
-            return map_type_impl::get_instance(std::move(key_type), std::move(value_type), bool(multi_cell));
+        [this] (std::mt19937& engine, column_kind kind, bool is_multi_cell) {
+            auto key_type = (*this)(engine, kind, false);
+            auto value_type = (*this)(engine, kind, false);
+            return map_type_impl::get_instance(std::move(key_type), std::move(value_type), is_multi_cell);
         });
 }
 
-data_type type_generator::operator()(std::mt19937& engine, is_multi_cell multi_cell) {
+data_type type_generator::operator()(std::mt19937& engine, column_kind kind, bool is_multi_cell) {
     auto dist = std::uniform_int_distribution<size_t>(0, _generators.size() - 1);
-    return _generators.at(dist(engine))(engine, multi_cell);
+    auto type = _generators.at(dist(engine))(engine, kind, is_multi_cell);
+    // duration type is not allowed in:
+    // * primary key components
+    // * as member types of collections
+    //
+    // To cover all this, we simply disallow it altogether when is_multi_cell is
+    // false, which will be the case in all the above cases.
+    while (!is_multi_cell && type == duration_type) {
+        type = (*this)(engine, kind, is_multi_cell);
+    }
+    return type;
 }
 
 namespace {
@@ -131,19 +141,18 @@ private:
         return id;
     }
 
-    std::vector<data_type> generate_types(std::mt19937& engine, std::uniform_int_distribution<size_t>& count_dist,
-            type_generator::is_multi_cell multi_cell, bool allow_reversed = false) {
+    std::vector<data_type> generate_types(std::mt19937& engine, std::uniform_int_distribution<size_t>& count_dist, column_kind kind) {
+        const bool allow_reversed = kind == column_kind::clustering_key;
         std::uniform_int_distribution<uint8_t> reversed_dist{0, uint8_t(allow_reversed)};
+
+        const bool can_be_multi_cell = kind == column_kind::static_column|| kind == column_kind::regular_column;
+        std::uniform_int_distribution<uint8_t> multi_cell_dist{0, uint8_t(can_be_multi_cell)};
 
         std::vector<data_type> types;
 
         const auto count = count_dist(engine);
         for (size_t c = 0; c < count; ++c) {
-            auto type = _type_generator(engine, multi_cell);
-            while (!multi_cell && type == duration_type) {
-                // duration_type not allowed for primary key component
-                type = _type_generator(engine, multi_cell);
-            }
+            auto type = _type_generator(engine, kind, multi_cell_dist(engine));
             if (reversed_dist(engine)) {
                 types.emplace_back(make_shared<reversed_type_impl>(std::move(type)));
             } else {
@@ -177,16 +186,16 @@ public:
         return format("udt{}", generate_unique_id(engine, _used_udt_ids));
     }
     virtual std::vector<data_type> partition_key_columns(std::mt19937& engine) override {
-        return generate_types(engine, _partition_column_count_dist, type_generator::is_multi_cell::no, false);
+        return generate_types(engine, _partition_column_count_dist, column_kind::partition_key);
     }
     virtual std::vector<data_type> clustering_key_columns(std::mt19937& engine) override {
-        return generate_types(engine, _clustering_column_count_dist, type_generator::is_multi_cell::no, true);
+        return generate_types(engine, _clustering_column_count_dist, column_kind::clustering_key);
     }
     virtual std::vector<data_type> regular_columns(std::mt19937& engine) override {
-        return generate_types(engine, _regular_column_count_dist, type_generator::is_multi_cell::yes, false);
+        return generate_types(engine, _regular_column_count_dist, column_kind::regular_column);
     }
     virtual std::vector<data_type> static_columns(std::mt19937& engine) override {
-        return generate_types(engine, _static_column_count_dist, type_generator::is_multi_cell::yes, false);
+        return generate_types(engine, _static_column_count_dist, column_kind::static_column);
     }
 };
 

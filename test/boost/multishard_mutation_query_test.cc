@@ -12,13 +12,14 @@
 #include "partition_slice_builder.hh"
 #include "serializer_impl.hh"
 #include "query-result-set.hh"
+#include "test/lib/cql_assertions.hh"
 #include "test/lib/cql_test_env.hh"
 #include "test/lib/eventually.hh"
 #include "test/lib/cql_assertions.hh"
 #include "test/lib/mutation_assertions.hh"
-#include "test/lib/test_table.hh"
 #include "test/lib/log.hh"
 #include "test/lib/test_utils.hh"
+#include "test/lib/test_table.hh"
 #include "test/lib/random_utils.hh"
 #include "test/lib/random_schema.hh"
 
@@ -28,7 +29,109 @@
 
 #include <boost/range/algorithm/sort.hpp>
 
-const sstring KEYSPACE_NAME = "multishard_mutation_query_test";
+const sstring KEYSPACE_NAME = "ks";
+
+namespace {
+
+api::timestamp_type no_tombstone_timestamp_generator(std::mt19937& engine, tests::timestamp_destination destination, api::timestamp_type min_timestamp) {
+    switch (destination) {
+        case tests::timestamp_destination::partition_tombstone:
+        case tests::timestamp_destination::row_tombstone:
+        case tests::timestamp_destination::collection_tombstone:
+        case tests::timestamp_destination::range_tombstone:
+            return api::missing_timestamp;
+        default:
+            return std::uniform_int_distribution<api::timestamp_type>(min_timestamp, api::max_timestamp)(engine);
+    }
+}
+
+struct generated_table {
+    schema_ptr schema;
+    std::vector<dht::decorated_key> keys;
+    std::vector<frozen_mutation> compacted_frozen_mutations;
+};
+
+class random_schema_specification : public tests::random_schema_specification {
+    sstring _table_name;
+    std::unique_ptr<tests::random_schema_specification> _underlying_spec;
+public:
+    random_schema_specification(sstring ks_name, sstring table_name)
+        : tests::random_schema_specification(std::move(ks_name))
+        , _table_name(std::move(table_name))
+        , _underlying_spec(tests::make_random_schema_specification(keyspace_name()))
+    { }
+    virtual sstring table_name(std::mt19937& engine) override { return _table_name; }
+    virtual sstring udt_name(std::mt19937& engine) override { return _underlying_spec->udt_name(engine); }
+    virtual std::vector<data_type> partition_key_columns(std::mt19937& engine) override { return _underlying_spec->partition_key_columns(engine); }
+    virtual std::vector<data_type> clustering_key_columns(std::mt19937& engine) override { return _underlying_spec->clustering_key_columns(engine); }
+    virtual std::vector<data_type> regular_columns(std::mt19937& engine) override { return _underlying_spec->regular_columns(engine); }
+    virtual std::vector<data_type> static_columns(std::mt19937& engine) override { return _underlying_spec->static_columns(engine); }
+};
+
+} // anonymous namespace
+
+static generated_table create_test_table(
+        cql_test_env& env,
+        uint32_t seed,
+        sstring ks_name,
+        sstring tbl_name,
+        std::uniform_int_distribution<size_t> partitions,
+        std::uniform_int_distribution<size_t> clustering_rows,
+        std::uniform_int_distribution<size_t> range_tombstones,
+        tests::timestamp_generator ts_gen) {
+    auto random_schema_spec = std::make_unique<random_schema_specification>(ks_name, tbl_name);
+    auto random_schema = tests::random_schema(seed, *random_schema_spec);
+
+    testlog.info("\n{}", random_schema.cql());
+
+    random_schema.create_with_cql(env).get();
+
+    const auto mutations = tests::generate_random_mutations(
+            seed,
+            random_schema,
+            ts_gen,
+            tests::no_expiry_expiry_generator(),
+            partitions,
+            clustering_rows,
+            range_tombstones).get();
+
+    auto schema = random_schema.schema();
+
+    std::vector<dht::decorated_key> keys;
+    std::vector<frozen_mutation> compacted_frozen_mutations;
+    keys.reserve(mutations.size());
+    compacted_frozen_mutations.reserve(mutations.size());
+    {
+        gate write_gate;
+        for (const auto& mut : mutations) {
+            keys.emplace_back(mut.decorated_key());
+            compacted_frozen_mutations.emplace_back(freeze(mut.compacted()));
+            (void)with_gate(write_gate, [&] {
+                return smp::submit_to(dht::shard_of(*schema, mut.decorated_key().token()), [&env, gs = global_schema_ptr(schema), mut = freeze(mut)] () mutable {
+                    return env.local_db().apply(gs.get(), std::move(mut), {}, db::commitlog_force_sync::no, db::no_timeout);
+                });
+            });
+            thread::maybe_yield();
+        }
+        write_gate.close().get();
+    }
+
+    return {random_schema.schema(), keys, compacted_frozen_mutations};
+}
+
+static std::pair<schema_ptr, std::vector<dht::decorated_key>> create_test_table(cql_test_env& env, sstring ks_name,
+        sstring tbl_name, int partition_count = 10 * smp::count, int row_per_partition_count = 10) {
+    auto res = create_test_table(
+            env,
+            tests::random::get_int<uint32_t>(),
+            std::move(ks_name),
+            std::move(tbl_name),
+            std::uniform_int_distribution<size_t>(partition_count, partition_count),
+            std::uniform_int_distribution<size_t>(row_per_partition_count, row_per_partition_count),
+            std::uniform_int_distribution<size_t>(0, 0),
+            no_tombstone_timestamp_generator);
+    return {std::move(res.schema), std::move(res.keys)};
+}
 
 static uint64_t aggregate_querier_cache_stat(distributed<replica::database>& db, uint64_t query::querier_cache::stats::*stat) {
     return map_reduce(boost::irange(0u, smp::count), [stat, &db] (unsigned shard) {
@@ -40,7 +143,9 @@ static uint64_t aggregate_querier_cache_stat(distributed<replica::database>& db,
 }
 
 static void check_cache_population(distributed<replica::database>& db, size_t queriers,
-        std::source_location sl = std::source_location::current()) {
+        std::source_location sl = std::source_location::current());
+
+static void check_cache_population(distributed<replica::database>& db, size_t queriers, std::source_location sl) {
     testlog.info("{}() called from {}() {}:{:d}", __FUNCTION__, sl.function_name(), sl.file_name(), sl.line());
 
     parallel_for_each(boost::irange(0u, smp::count), [queriers, &db] (unsigned shard) {
@@ -51,8 +156,9 @@ static void check_cache_population(distributed<replica::database>& db, size_t qu
     }).get0();
 }
 
-static void require_eventually_empty_caches(distributed<replica::database>& db,
-        std::source_location sl = std::source_location::current()) {
+static void require_eventually_empty_caches(distributed<replica::database>& db, std::source_location sl = std::source_location::current());
+
+static void require_eventually_empty_caches(distributed<replica::database>& db, std::source_location sl) {
     testlog.info("{}() called from {}() {}:{:d}", __FUNCTION__, sl.function_name(), sl.file_name(), sl.line());
 
     auto aggregated_population_is_zero = [&] () mutable {
@@ -70,7 +176,7 @@ SEASTAR_THREAD_TEST_CASE(test_abandoned_read) {
             db.set_querier_cache_entry_ttl(1s);
         }).get();
 
-        auto [s, _] = test::create_test_table(env, KEYSPACE_NAME, "test_abandoned_read");
+        auto [s, _] = create_test_table(env, KEYSPACE_NAME, "test_abandoned_read");
         (void)_;
 
         auto cmd = query::read_command(
@@ -133,7 +239,7 @@ static std::pair<typename ResultBuilder::end_result_type, size_t>
 read_partitions_with_generic_paged_scan(distributed<replica::database>& db, schema_ptr s, uint32_t page_size, uint64_t max_size, stateful_query is_stateful,
         const dht::partition_range_vector& original_ranges, const query::partition_slice& slice, const std::function<void(size_t)>& page_hook = {}) {
     const auto query_uuid = is_stateful ? query_id::create_random_id() : query_id::create_null_id();
-    ResultBuilder res_builder(s, slice);
+    ResultBuilder res_builder(s, slice, page_size);
     auto cmd = query::read_command(
             s->id(),
             s->version(),
@@ -224,6 +330,7 @@ public:
 private:
     schema_ptr _s;
     const query::partition_slice& _slice;
+    uint64_t _page_size = 0;
     std::vector<mutation> _results;
     std::optional<dht::decorated_key> _last_pkey;
     std::optional<clustering_key> _last_ckey;
@@ -252,7 +359,7 @@ public:
         return std::get<0>(query_mutations_on_all_shards(db, std::move(s), cmd, ranges, std::move(trace_state), timeout).get());
     }
 
-    explicit mutation_result_builder(schema_ptr s, const query::partition_slice& slice) : _s(std::move(s)), _slice(slice) { }
+    explicit mutation_result_builder(schema_ptr s, const query::partition_slice& slice, uint64_t page_size) : _s(std::move(s)), _slice(slice), _page_size(page_size) { }
 
     bool add(const reconcilable_result& res) {
         auto it = res.partitions().begin();
@@ -284,7 +391,7 @@ public:
             _results.emplace_back(std::move(mut));
         }
 
-        return true;
+        return res.is_short_read() || res.row_count() >= _page_size;
     }
 
     const dht::decorated_key& last_pkey() const { return _last_pkey.value(); }
@@ -303,6 +410,7 @@ public:
 private:
     schema_ptr _s;
     const query::partition_slice& _slice;
+    uint64_t _page_size = 0;
     std::vector<query::result_set_row> _rows;
     std::optional<dht::decorated_key> _last_pkey;
     std::optional<clustering_key> _last_ckey;
@@ -336,7 +444,7 @@ public:
         return std::get<0>(query_data_on_all_shards(db, std::move(s), cmd, ranges, query::result_options::only_result(), std::move(trace_state), timeout).get());
     }
 
-    explicit data_result_builder(schema_ptr s, const query::partition_slice& slice) : _s(std::move(s)), _slice(slice) { }
+    explicit data_result_builder(schema_ptr s, const query::partition_slice& slice, uint64_t page_size) : _s(std::move(s)), _slice(slice), _page_size(page_size) { }
 
     bool add(const query::result& raw_res) {
         auto res = query::result_set::from_raw_result(_s, _slice, raw_res);
@@ -354,7 +462,7 @@ public:
                 _last_pkey_rows = 1;
             }
         }
-        return true;
+        return raw_res.is_short_read() || res.rows().size() >= _page_size;
     }
 
     const dht::decorated_key& last_pkey() const { return _last_pkey.value(); }
@@ -402,7 +510,7 @@ SEASTAR_THREAD_TEST_CASE(test_read_all) {
             db.set_querier_cache_entry_ttl(2s);
         }).get();
 
-        auto [s, pkeys] = test::create_test_table(env, KEYSPACE_NAME, "test_read_all");
+        auto [s, pkeys] = create_test_table(env, "ks", "test_read_all");
 
         // First read all partition-by-partition (not paged).
         auto results1 = read_all_partitions_one_by_one(env.db(), s, pkeys);
@@ -436,14 +544,14 @@ SEASTAR_THREAD_TEST_CASE(test_read_all) {
 
 // Best run with SMP>=2
 SEASTAR_THREAD_TEST_CASE(test_read_all_multi_range) {
-    do_with_cql_env_thread([] (cql_test_env& env) -> future<> {
+    do_with_cql_env_thread([this] (cql_test_env& env) -> future<> {
         using namespace std::chrono_literals;
 
         env.db().invoke_on_all([] (replica::database& db) {
             db.set_querier_cache_entry_ttl(2s);
         }).get();
 
-        auto [s, pkeys] = test::create_test_table(env, KEYSPACE_NAME, "test_read_all");
+        auto [s, pkeys] = create_test_table(env, KEYSPACE_NAME, get_name());
 
         const auto limit = std::numeric_limits<uint64_t>::max();
 
@@ -498,7 +606,7 @@ SEASTAR_THREAD_TEST_CASE(test_read_with_partition_row_limits) {
             db.set_querier_cache_entry_ttl(2s);
         }).get();
 
-        auto [s, pkeys] = test::create_test_table(env, KEYSPACE_NAME, get_name(), 2, 10);
+        auto [s, pkeys] = create_test_table(env, KEYSPACE_NAME, get_name(), 2, 10);
 
         unsigned i = 0;
 
@@ -537,14 +645,14 @@ SEASTAR_THREAD_TEST_CASE(test_read_with_partition_row_limits) {
 
 // Best run with SMP>=2
 SEASTAR_THREAD_TEST_CASE(test_evict_a_shard_reader_on_each_page) {
-    do_with_cql_env_thread([] (cql_test_env& env) -> future<> {
+    do_with_cql_env_thread([this] (cql_test_env& env) -> future<> {
         using namespace std::chrono_literals;
 
         env.db().invoke_on_all([] (replica::database& db) {
             db.set_querier_cache_entry_ttl(2s);
         }).get();
 
-        auto [s, pkeys] = test::create_test_table(env, KEYSPACE_NAME, "test_evict_a_shard_reader_on_each_page");
+        auto [s, pkeys] = create_test_table(env, KEYSPACE_NAME, get_name());
 
         // First read all partition-by-partition (not paged).
         auto results1 = read_all_partitions_one_by_one(env.db(), s, pkeys);
@@ -580,7 +688,7 @@ SEASTAR_THREAD_TEST_CASE(test_read_reversed) {
 
         auto& db = env.db();
 
-        auto [s, pkeys] = test::create_test_table(env, KEYSPACE_NAME, get_name(), 4, 8);
+        auto [s, pkeys] = create_test_table(env, KEYSPACE_NAME, get_name(), 4, 8);
 
         unsigned i = 0;
 
@@ -930,60 +1038,26 @@ SEASTAR_THREAD_TEST_CASE(fuzzy_test) {
     auto db_cfg = make_shared<db::config>();
     db_cfg->enable_commitlog(false);
 
-    do_with_cql_env_thread([] (cql_test_env& env) -> future<> {
+    do_with_cql_env_thread([this] (cql_test_env& env) -> future<> {
         // REPLACE RANDOM SEED HERE.
         const auto seed = tests::random::get_int<uint32_t>();
         testlog.info("fuzzy test seed: {}", seed);
 
-        auto& db = env.local_db();
-
-        auto random_schema_spec = tests::make_random_schema_specification(
-                "ks",
-                std::uniform_int_distribution<size_t>(1, 4),
-                std::uniform_int_distribution<size_t>(0, 4),
-                std::uniform_int_distribution<size_t>(1, 8),
-                std::uniform_int_distribution<size_t>(0, 4));
-        auto random_schema = tests::random_schema(seed, *random_schema_spec);
-
-        testlog.info("fuzzy test schema:\n{}", random_schema.cql());
-
-        random_schema.create_with_cql(env).get();
-        auto schema = random_schema.schema();
-
-        const auto mutations = tests::generate_random_mutations(
-                seed,
-                random_schema,
-                tests::default_timestamp_generator(),
-                tests::no_expiry_expiry_generator(),
+        auto tbl = create_test_table(env, seed, "ks", get_name(),
 #ifdef DEBUG
                 std::uniform_int_distribution<size_t>(8, 32), // partitions
                 std::uniform_int_distribution<size_t>(0, 100), // clustering-rows
-                std::uniform_int_distribution<size_t>(0, 10) // range-tombstones
+                std::uniform_int_distribution<size_t>(0, 10), // range-tombstones
 #elif DEVEL
                 std::uniform_int_distribution<size_t>(16, 64), // partitions
                 std::uniform_int_distribution<size_t>(0, 100), // clustering-rows
-                std::uniform_int_distribution<size_t>(0, 100) // range-tombstones
+                std::uniform_int_distribution<size_t>(0, 100), // range-tombstones
 #else
                 std::uniform_int_distribution<size_t>(32, 64), // partitions
                 std::uniform_int_distribution<size_t>(0, 1000), // clustering-rows
-                std::uniform_int_distribution<size_t>(0, 1000) // range-tombstones
+                std::uniform_int_distribution<size_t>(0, 1000), // range-tombstones
 #endif
-                ).get();
-
-        std::vector<frozen_mutation> compacted_frozen_mutations;
-        {
-            gate write_gate;
-            for (const auto& mut : mutations) {
-                compacted_frozen_mutations.emplace_back(freeze(mut.compacted()));
-                (void)with_gate(write_gate, [&] {
-                    return smp::submit_to(dht::shard_of(*schema, mut.decorated_key().token()), [&env, gs = global_schema_ptr(schema), mut = freeze(mut)] () mutable {
-                        return env.local_db().apply(gs.get(), std::move(mut), {}, db::commitlog_force_sync::no, db::no_timeout);
-                    });
-                });
-                thread::maybe_yield();
-            }
-            write_gate.close().get();
-        }
+                tests::default_timestamp_generator());
 
 #if defined DEBUG
         auto cfg = fuzzy_test_config{seed, std::chrono::seconds{8}, 1, 1};
@@ -996,7 +1070,7 @@ SEASTAR_THREAD_TEST_CASE(fuzzy_test) {
         testlog.info("Running test workload with configuration: seed={}, timeout={}s, concurrency={}, scans={}", cfg.seed, cfg.timeout.count(),
                 cfg.concurrency, cfg.scans);
 
-        smp::invoke_on_all([cfg, db = &env.db(), gs = global_schema_ptr(schema), &compacted_frozen_mutations] {
+        smp::invoke_on_all([cfg, db = &env.db(), gs = global_schema_ptr(tbl.schema), &compacted_frozen_mutations = tbl.compacted_frozen_mutations] {
             return run_fuzzy_test_workload(cfg, *db, gs.get(), compacted_frozen_mutations);
         }).handle_exception([seed] (std::exception_ptr e) {
             testlog.error("Test workload failed with exception {}."
