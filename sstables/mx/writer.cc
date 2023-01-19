@@ -144,6 +144,18 @@ public:
     }
 
     bool next() const {
+        if (_serialization_limit_size == 0 && _schema.clustering_key_size() > 0) {
+            if (_offset == 0) {
+                // We need to encode at least one block, even if the prefix is empty
+                _offset = 1;
+                _current_block = {};
+                // All values of the prefix are missing (null), but it's enough to mark only the first one
+                _current_block.header = 2;
+                return true;
+            } else {
+                return false;
+            }
+        }
         if (_offset == _serialization_limit_size) {
             // No more values to encode
             return false;
