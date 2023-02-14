@@ -9,7 +9,7 @@
 
 from cassandra.protocol import InvalidRequest
 from cassandra.cluster import NoHostAvailable
-from util import new_test_table, unique_name, new_function, new_aggregate
+from util import new_test_table, unique_name, new_function, new_aggregate, new_type
 
 import pytest
 import requests
@@ -84,9 +84,9 @@ def read_function_from_file(func_name, rename=None):
     wat_path = os.path.realpath(os.path.join(__file__, f"../../resource/wasm/{func_name}.wat"))
     with open(wat_path, "r") as f:
         if rename:
-            return f.read().replace(f'export "{func_name}"', f'export "{rename}"')
+            return f.read().replace(f'export "{func_name}"', f'export "{rename}"').replace("'", "''")
         else:
-            return f.read()
+            return f.read().replace("'", "''")
 
 # Test that calling a fibonacci function that claims to accept null input works.
 # Note that since the int field is nullable, it's no longer
@@ -1107,3 +1107,100 @@ def test_counter(cql, test_keyspace, scylla_only):
             cql.execute(f"UPDATE {table} SET c = c + 1  WHERE p = 42;")
             cql.execute(f"UPDATE {table} SET c = c - 4  WHERE p = 42;")
             assert cql.execute(f"SELECT {ri_counter_name}(c) AS result FROM {table} WHERE p = 42").one().result == -1
+
+def test_helper_library(cql, test_keyspace, scylla_only):
+    with new_type(cql, test_keyspace, "(a int, b int, c text, d text)") as type_name:
+        schema = f"pk int primary key, s1 smallint, s2 smallint, lt list<text>, t text, i int, mtt map<text, text>, st set<text>, u frozen<{type_name}>"
+        with new_test_table(cql, test_keyspace, schema) as table:
+# name = "add1"
+            add1_name = "add1_" + unique_name()
+            add1_source = read_function_from_file('add1', add1_name)
+            src = f"(input smallint, input2 smallint) RETURNS NULL ON NULL INPUT RETURNS smallint LANGUAGE xwasm AS '{add1_source}'"
+            with new_function(cql, test_keyspace, src, add1_name):
+                cql.execute(f"INSERT INTO {table} (pk, s1, s2) VALUES (1, 2, 3)")
+                assert cql.execute(f"SELECT {add1_name}(s1, s2) AS result FROM {table} WHERE pk = 1").one().result == 5
+# name = "commas"
+            commas_name = "commas_" + unique_name()
+            commas_source = read_function_from_file('commas', commas_name)
+            src = f"(input list<text>) CALLED ON NULL INPUT RETURNS text LANGUAGE xwasm AS '{commas_source}'"
+            with new_function(cql, test_keyspace, src, commas_name):
+                cql.execute(f"INSERT INTO {table} (pk, lt) VALUES (2, ['a', 'b', 'c'])")
+                assert cql.execute(f"SELECT {commas_name}(lt) AS result FROM {table} WHERE pk = 2").one().result == 'a, b, c'
+                assert cql.execute(f"SELECT {commas_name}(lt) AS result FROM {table} WHERE pk = 1").one().result == None
+# name = "dbl2"
+            dbl2_name = "dbl2_" + unique_name()
+            dbl2_source = read_function_from_file('dbl2', dbl2_name)
+            src = f"(input text) RETURNS NULL ON NULL INPUT RETURNS text LANGUAGE xwasm AS '{dbl2_source}'"
+            with new_function(cql, test_keyspace, src, dbl2_name):
+                cql.execute(f"INSERT INTO {table} (pk, t) VALUES (3, 'abd')")
+                assert cql.execute(f"SELECT {dbl2_name}(t) AS result FROM {table} WHERE pk = 3").one().result == 'abdabd'
+# name = "fib2"
+            fib2_name = "fib2_" + unique_name()
+            fib2_source = read_function_from_file('fib2', fib2_name)
+            src = f"(input int) RETURNS NULL ON NULL INPUT RETURNS bigint LANGUAGE xwasm AS '{fib2_source}'"
+            with new_function(cql, test_keyspace, src, fib2_name):
+                cql.execute(f"INSERT INTO {table} (pk, i) VALUES (4, 10)")
+                assert cql.execute(f"SELECT {fib2_name}(i) AS result FROM {table} WHERE pk = 4").one().result == 55
+# name = "keys"
+            keys_name = "keys_" + unique_name()
+            keys_source = read_function_from_file('keys', keys_name)
+            src = f"(input map<text, text>) RETURNS NULL ON NULL INPUT RETURNS list<text> LANGUAGE xwasm AS '{keys_source}'"
+            with new_function(cql, test_keyspace, src, keys_name):
+                cql.execute(f"INSERT INTO {table} (pk, mtt) VALUES (5, {{'a': 'b', 'c': 'd'}})")
+                assert cql.execute(f"SELECT {keys_name}(mtt) AS result FROM {table} WHERE pk = 5").one().result == ['a', 'c']
+# name = "len"
+            len_name = "len_" + unique_name()
+            len_source = read_function_from_file('len', len_name)
+            src = f"(input set<text>) RETURNS NULL ON NULL INPUT RETURNS smallint LANGUAGE xwasm AS '{len_source}'"
+            with new_function(cql, test_keyspace, src, len_name):
+                cql.execute(f"INSERT INTO {table} (pk, st) VALUES (6, {{'a', 'b', 'c'}})")
+                assert cql.execute(f"SELECT {len_name}(st) AS result FROM {table} WHERE pk = 6").one().result == 3
+# name = "udt"
+            udt_name = "udt_" + unique_name()
+            udt_source = read_function_from_file('udt', udt_name)
+            src = f"(input {type_name}) RETURNS NULL ON NULL INPUT RETURNS {type_name} LANGUAGE xwasm AS '{udt_source}'"
+            with new_function(cql, test_keyspace, src, udt_name):
+                cql.execute(f"INSERT INTO {table} (pk, u) VALUES (7, {{a: 1, b: 2, c: 'abc', d: 'def'}})")
+                udt = cql.execute(f"SELECT {udt_name}(u) AS result FROM {table} WHERE pk = 7").one().result
+                assert udt.a == 2
+                assert udt.b == 1
+                assert udt.c == 'def'
+                assert udt.d == 'abc'
+# name = "wordcount"
+            wordcount_name = "wordcount_" + unique_name()
+            wordcount_source = read_function_from_file('wordcount', wordcount_name)
+            src = f"(input text) RETURNS NULL ON NULL INPUT RETURNS int LANGUAGE xwasm AS '{wordcount_source}'"
+            with new_function(cql, test_keyspace, src, wordcount_name):
+                cql.execute(f"INSERT INTO {table} (pk, t) VALUES (8, 'abc def')")
+                assert cql.execute(f"SELECT {wordcount_name}(t) AS result FROM {table} WHERE pk = 8").one().result == 2
+# name = "topn"
+            topn_source = read_function_from_file('topn')
+            topn_row_name = "topn_row"
+            topn_reduce_name = "topn_reduce"
+            topn_final_name = "topn_final"
+            topn_row_src = f"(input tuple<int, set<text>>, input2 text) CALLED ON NULL INPUT RETURNS tuple<int, set<text>> LANGUAGE xwasm AS '{topn_source}'"
+            topn_reduce_src = f"(input tuple<int, set<text>>, input2 tuple<int, set<text>>) RETURNS NULL ON NULL INPUT RETURNS tuple<int, set<text>> LANGUAGE xwasm AS '{topn_source}'"
+            topn_final_src = f"(input tuple<int, set<text>>) RETURNS NULL ON NULL INPUT RETURNS set<text> LANGUAGE xwasm AS '{topn_source}'"
+            with new_function(cql, test_keyspace, topn_row_src, topn_row_name), \
+                 new_function(cql, test_keyspace, topn_reduce_src, topn_reduce_name), \
+                 new_function(cql, test_keyspace, topn_final_src, topn_final_name):
+                agg_body = f"(text) SFUNC {topn_row_name} STYPE tuple<int,set<text>> REDUCEFUNC {topn_reduce_name} FINALFUNC {topn_final_name} INITCOND (3,{{}})"
+                with new_aggregate(cql, test_keyspace, agg_body) as agg:
+                    cql.execute(f"INSERT INTO {table} (pk, t) VALUES (9, 'asdf')")
+                    cql.execute(f"INSERT INTO {table} (pk, t) VALUES (10, 'ds')")
+                    cql.execute(f"INSERT INTO {table} (pk, t) VALUES (11, '1543345')")
+                    from cassandra.util import SortedSet
+                    assert cql.execute(f"SELECT {agg}(t) AS result FROM {table}").one().result == SortedSet(['1543345', 'abc def', 'asdf'])
+# name = "combine"
+    schema = "b boolean primary key, blob blob, date date, bd decimal, dbl double, cqldur duration, flt float, int32 int, int64 bigint, s text, tstamp timestamp, ip inet, int16 smallint, int8 tinyint, tim time, uid uuid, bi varint"
+    with new_test_table(cql, test_keyspace, schema) as table:
+        combine_name = "combine_" + unique_name()
+        combine_source = read_function_from_file('combine', combine_name)
+        src = f"(b boolean, blob blob, date date, bd decimal, dbl double, cqldur duration, flt float, int32 int, int64 bigint, s text, tstamp timestamp, ip inet, int16 smallint, int8 tinyint, tim time, uid uuid, bi varint) RETURNS NULL ON NULL INPUT RETURNS tuple<tuple<boolean, blob, date, decimal, double, duration, float, int, bigint>, tuple<text, timestamp, inet, smallint, tinyint, time, uuid, varint>> LANGUAGE xwasm AS '{combine_source}'"
+        with new_function(cql, test_keyspace, src, combine_name):
+            cql.execute(f"INSERT INTO {table} (b, blob, date, bd, dbl, cqldur, flt, int32, int64, s, tstamp, ip, int16, int8, tim, uid, bi) VALUES (true, 0x02, '2020-01-01', 3.4, 5.6, 7d, 89.0, 10, 10000000000, 'a', '2011-02-03 04:05+0000', '192.168.0.1', 12, 13, '14:15:16', 123e4567-e89b-12d3-a456-426655440000, 165234542457564265246524)")
+            from cassandra.util import Time, Date, Duration;
+            from uuid import UUID;
+            from datetime import datetime;
+            from decimal import Decimal;
+            assert cql.execute(f"SELECT {combine_name}(b, blob, date, bd, dbl, cqldur, flt, int32, int64, s, tstamp, ip, int16, int8, tim, uid, bi) AS result FROM {table}").one().result == ((True, b'\x02', Date("2020-1-1"), Decimal('3.4'), 5.6, Duration(days=7), 89.0, 10, 10000000000), ('a', datetime(2011, 2, 3, 4, 5), '192.168.0.1', 12, 13, Time("14:15:16"), UUID('123e4567-e89b-12d3-a456-426655440000'), 165234542457564265246524))
