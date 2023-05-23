@@ -873,7 +873,7 @@ database::init_commitlog() {
                 return;
             }
             // Initiate a background flush. Waited upon in `stop()`.
-            (void)_column_families[id]->flush(pos);
+            (void)_column_families[id]->commitlog_flush(pos);
         }).release(); // we have longer life time than CL. Ignore reg anchor
     });
 }
@@ -943,7 +943,7 @@ void database::maybe_init_schema_commitlog() {
             return;
         }
         // Initiate a background flush. Waited upon in `stop()`.
-        (void)_column_families[id]->flush(pos);
+        (void)_column_families[id]->commitlog_flush(pos);
 
     }).release();
 }
@@ -1752,6 +1752,25 @@ future<> memtable_list::flush() {
         _dirty_memory_manager->get_flush_permit().then([this] (auto permit) {
             _flush_coalescing.reset();
             return _dirty_memory_manager->flush_one(*this, std::move(permit)).finally([this] {
+                _dirty_memory_manager->finish_extraneous_flush();
+            });
+        }).forward_to(std::move(flushed));
+        return ret;
+    } else {
+        return *_flush_coalescing;
+    }
+}
+
+future<> memtable_list::commitlog_flush() {
+    if (!may_flush()) {
+        return make_ready_future<>();
+    } else if (!_flush_coalescing) {
+        promise<> flushed;
+        future<> ret = _flush_coalescing.emplace(flushed.get_future());
+        _dirty_memory_manager->start_extraneous_flush();
+        _dirty_memory_manager->get_flush_permit().then([this] (auto permit) {
+            _flush_coalescing.reset();
+            return _dirty_memory_manager->commitlog_flush_one(*this, std::move(permit)).finally([this] {
                 _dirty_memory_manager->finish_extraneous_flush();
             });
         }).forward_to(std::move(flushed));

@@ -716,7 +716,12 @@ public:
 // The function never fails.
 // It either succeeds eventually after retrying or aborts.
 future<>
-table::seal_active_memtable(compaction_group& cg, flush_permit&& flush_permit) noexcept {
+table::seal_active_memtable(compaction_group& cg, flush_permit&& flush_permit, bool from_commmitlog) noexcept {
+    if (from_commmitlog) {
+        tlogger.info("Sealing active memtable of {}.{}, partitions: {}, occupancy: {} (from commitlog)", _schema->ks_name(), _schema->cf_name(), cg.memtables()->back()->partition_count(), cg.memtables()->back()->occupancy());
+    } else {
+        tlogger.info("Sealing active memtable of {}.{}, partitions: {}, occupancy: {} (from memtable)", _schema->ks_name(), _schema->cf_name(), cg.memtables()->back()->partition_count(), cg.memtables()->back()->occupancy());
+    }
     auto old = cg.memtables()->back();
     tlogger.debug("Sealing active memtable of {}.{}, partitions: {}, occupancy: {}", _schema->ks_name(), _schema->cf_name(), old->partition_count(), old->occupancy());
 
@@ -1476,8 +1481,8 @@ table::make_memory_only_memtable_list() {
 
 lw_shared_ptr<memtable_list>
 table::make_memtable_list(compaction_group& cg) {
-    auto seal = [this, &cg] (flush_permit&& permit) {
-        return seal_active_memtable(cg, std::move(permit));
+    auto seal = [this, &cg] (flush_permit&& permit, bool from_commitlog) {
+        return seal_active_memtable(cg, std::move(permit), from_commitlog);
     };
     auto get_schema = [this] { return schema(); };
     return make_lw_shared<memtable_list>(std::move(seal), std::move(get_schema), _config.dirty_memory_manager, _stats, _config.memory_compaction_scheduling_group);
@@ -1811,6 +1816,10 @@ future<> compaction_group::flush() {
     return _memtables->flush();
 }
 
+future<> compaction_group::commitlog_flush() {
+    return _memtables->commitlog_flush();
+}
+
 bool compaction_group::can_flush() const {
     return _memtables->can_flush();
 }
@@ -1830,6 +1839,16 @@ future<> table::flush(std::optional<db::replay_position> pos) {
     auto op = _pending_flushes_phaser.start();
     auto fp = _highest_rp;
     co_await parallel_foreach_compaction_group(std::mem_fn(&compaction_group::flush));
+    _flush_rp = std::max(_flush_rp, fp);
+}
+
+future<> table::commitlog_flush(std::optional<db::replay_position> pos) {
+    if (pos && *pos < _flush_rp) {
+        co_return;
+    }
+    auto op = _pending_flushes_phaser.start();
+    auto fp = _highest_rp;
+    co_await parallel_foreach_compaction_group(std::mem_fn(&compaction_group::commitlog_flush));
     _flush_rp = std::max(_flush_rp, fp);
 }
 

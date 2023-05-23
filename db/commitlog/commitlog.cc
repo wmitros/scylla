@@ -1772,6 +1772,7 @@ future<db::commitlog::segment_manager::sseg_ptr> db::commitlog::segment_manager:
 }
 
 future<db::commitlog::segment_manager::sseg_ptr> db::commitlog::segment_manager::allocate_segment() {
+    clogger.info("Allocating new segment, commitlog size: {} MB", totals.total_size_on_disk / (1024 * 1024));
     for (;;) {
         descriptor d(next_id(), cfg.fname_prefix);
         auto dst = filename(d);
@@ -1781,6 +1782,7 @@ future<db::commitlog::segment_manager::sseg_ptr> db::commitlog::segment_manager:
         }
 
         if (!_recycled_segments.empty()) {
+            clogger.info("Using one of {} recycled segments", _recycled_segments.size());
             auto f = _recycled_segments.pop();
             // Note: we have to do the rename here to ensure
             // proper descriptor id order. If we renamed in the delete call
@@ -1792,7 +1794,7 @@ future<db::commitlog::segment_manager::sseg_ptr> db::commitlog::segment_manager:
         }
 
         if (!cfg.allow_going_over_size_limit && max_disk_size != 0 && totals.total_size_on_disk >= max_disk_size) {
-            clogger.debug("Disk usage ({} MB) exceeds maximum ({} MB) - allocation will wait...", totals.total_size_on_disk/(1024*1024), max_disk_size/(1024*1024));
+            clogger.info("Disk usage ({} MB) exceeds maximum ({} MB) - allocation will wait...", totals.total_size_on_disk/(1024*1024), max_disk_size/(1024*1024));
             auto f = _recycled_segments.not_empty();
             if (!f.available()) {
                 _new_counter = 0; // zero this so timer task does not duplicate the below flush

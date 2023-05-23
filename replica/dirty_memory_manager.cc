@@ -216,7 +216,10 @@ dirty_memory_manager::dirty_memory_manager(replica::database& db, size_t thresho
             .start_reclaiming = std::bind_front(&dirty_memory_manager::start_reclaiming, this)
       }, deferred_work_sg)
     , _flush_serializer(1)
-    , _waiting_flush(flush_when_needed()) {}
+    , _waiting_flush(flush_when_needed()) {
+        dblog.info("Dirty memory manager initialized with unspooled_hard_limit={}, unspooled_soft_limit={}, real_hard_limit={}",
+                threshold / 2, threshold * soft_limit / 2, threshold);
+    }
 
 void
 dirty_memory_manager::setup_collectd(sstring namestr) {
@@ -242,7 +245,14 @@ future<> dirty_memory_manager::shutdown() {
 }
 
 future<> dirty_memory_manager::flush_one(replica::memtable_list& mtlist, flush_permit&& permit) noexcept {
-    return mtlist.seal_active_memtable(std::move(permit)).handle_exception([schema = mtlist.back()->schema()] (std::exception_ptr ep) {
+    return mtlist.seal_active_memtable(std::move(permit), false).handle_exception([schema = mtlist.back()->schema()] (std::exception_ptr ep) {
+        dblog.error("Failed to flush memtable, {}:{} - {}", schema->ks_name(), schema->cf_name(), ep);
+        return make_exception_future<>(ep);
+    });
+}
+
+future<> dirty_memory_manager::commitlog_flush_one(replica::memtable_list& mtlist, flush_permit&& permit) noexcept {
+    return mtlist.seal_active_memtable(std::move(permit), true).handle_exception([schema = mtlist.back()->schema()] (std::exception_ptr ep) {
         dblog.error("Failed to flush memtable, {}:{} - {}", schema->ks_name(), schema->cf_name(), ep);
         return make_exception_future<>(ep);
     });
@@ -257,6 +267,7 @@ future<> dirty_memory_manager::flush_when_needed() {
     return do_until([this] { return _db_shutdown_requested; }, [this] {
         auto has_work = [this] { return has_pressure() || _db_shutdown_requested; };
         return _should_flush.wait(std::move(has_work)).then([this] {
+            dblog.info("flushing because needed");
             return get_flush_permit().then([this] (auto permit) {
                 // We give priority to explicit flushes. They are mainly user-initiated flushes,
                 // flushes coming from a DROP statement, or commitlog flushes.
@@ -305,6 +316,8 @@ future<> dirty_memory_manager::flush_when_needed() {
 }
 
 void dirty_memory_manager::start_reclaiming() noexcept {
+    dblog.info("reclaiming started at {}", current_backtrace());
+
     _should_flush.signal();
 }
 

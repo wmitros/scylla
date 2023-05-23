@@ -160,7 +160,7 @@ using shared_memtable = lw_shared_ptr<memtable>;
 // of a common class.
 class memtable_list {
 public:
-    using seal_immediate_fn_type = std::function<future<> (flush_permit&&)>;
+    using seal_immediate_fn_type = std::function<future<> (flush_permit&&, bool)>;
 private:
     std::vector<shared_memtable> _memtables;
     seal_immediate_fn_type _seal_immediate_fn;
@@ -232,8 +232,8 @@ public:
         return _memtables.size();
     }
 
-    future<> seal_active_memtable(flush_permit&& permit) noexcept {
-        return _seal_immediate_fn(std::move(permit));
+    future<> seal_active_memtable(flush_permit&& permit, bool from_commitlog) noexcept {
+        return _seal_immediate_fn(std::move(permit), from_commitlog);
     }
 
     auto begin() noexcept {
@@ -269,6 +269,7 @@ public:
     // spends in memory allowing for more coalescing opportunities.
     // The returned future<> resolves when any pending flushes are complete and the memtable is sealed.
     future<> flush();
+    future<> commitlog_flush();
 private:
     lw_shared_ptr<memtable> new_memtable();
 };
@@ -832,6 +833,7 @@ public:
     void start();
     future<> stop();
     future<> flush(std::optional<db::replay_position> = {});
+    future<> commitlog_flush(std::optional<db::replay_position> = {});
     future<> clear(); // discards memtable(s) without flushing them to disk.
     future<db::replay_position> discard_sstables(db_clock::time_point);
 
@@ -1101,7 +1103,7 @@ private:
     //
     // The function never fails.
     // It either succeeds eventually after retrying or aborts.
-    future<> seal_active_memtable(compaction_group& cg, flush_permit&&) noexcept;
+    future<> seal_active_memtable(compaction_group& cg, flush_permit&&, bool) noexcept;
 
     void check_valid_rp(const db::replay_position&) const;
 public:

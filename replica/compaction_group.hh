@@ -79,6 +79,7 @@ public:
     future<> clear_memtables();
 
     future<> flush();
+    future<> commitlog_flush();
     bool can_flush() const;
 
     const dht::token_range& token_range() const noexcept {

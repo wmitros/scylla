@@ -7,6 +7,7 @@
  */
 
 #include "memtable.hh"
+#include "log.hh"
 #include "replica/database.hh"
 #include "mutation/frozen_mutation.hh"
 #include "partition_snapshot_reader.hh"
@@ -16,6 +17,8 @@
 #include "readers/forwardable_v2.hh"
 
 namespace replica {
+
+logging::logger memtable_logger("memtable");
 
 static flat_mutation_reader_v2 make_partition_snapshot_flat_reader_from_snp_schema(
         bool is_reversed,
@@ -125,6 +128,7 @@ memtable::memtable(schema_ptr schema, dirty_memory_manager& dmm, replica::table_
         , partitions(dht::raw_token_less_comparator{})
         , _table_stats(table_stats) {
     logalloc::region::listen(&dmm.region_group());
+    memtable_logger.info("region occupancy: {}", occupancy());
 }
 
 static thread_local dirty_memory_manager mgr_for_tests;
