@@ -2368,6 +2368,9 @@ query::tombstone_limit storage_proxy::get_tombstone_limit() const {
 }
 
 bool storage_proxy::need_throttle_writes() const {
+    if (utils::get_local_injector().enter("throttle_writes")) {
+        return true;
+    }
     return get_global_stats().background_write_bytes > _background_write_throttle_threahsold || get_global_stats().queued_write_bytes > 6*1024*1024;
 }
 
