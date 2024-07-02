@@ -1672,6 +1672,8 @@ static future<> apply_to_remote_endpoints(service::storage_proxy& proxy, locator
     co_await utils::get_local_injector().inject("delay_before_remote_view_update", 500ms);
     tracing::trace(tr_state, "Sending view update for {}.{} to {}, with pending endpoints = {}; base token = {}; view token = {}",
             mut.s->ks_name(), mut.s->cf_name(), target, pending_endpoints, base_token, view_token);
+    // vlogger.info("Sending view update for {}.{} to {}, with pending endpoints = {}; base token = {}; view token = {}",
+    //         mut.s->ks_name(), mut.s->cf_name(), target, pending_endpoints, base_token, view_token);
     co_await proxy.send_to_endpoint(
             std::move(mut),
             std::move(ermp),
@@ -1847,9 +1849,11 @@ future<> view_update_generator::mutate_MV(
             } else {
                 // The update is sent to background in order to preserve availability,
                 // its parallelism is limited by view_update_concurrency_semaphore
+                // vlogger.info("Applying remote view update to {}", *target_endpoint);
                 (void)remote_view_update;
             }
         }
+        // vlogger.info("Applying local view update");
         co_return co_await std::move(local_view_update);
     });
 }

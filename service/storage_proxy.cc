@@ -542,6 +542,7 @@ private:
                         //
                         // Usually we will return immediately, since this work only involves appending data to the connection
                         // send buffer.
+                        co_await utils::get_local_injector().inject("delay_responses", 10ms);
                         auto f = co_await coroutine::as_future(send_mutation_done(netw::messaging_service::msg_addr{reply_to, shard}, trace_state_ptr,
                                 shard, response_id, p->get_view_update_backlog()));
                         f.ignore_ready_future();
@@ -1422,6 +1423,7 @@ public:
 
     // While delayed, a request is not throttled.
     void unthrottle() {
+        // slogger.info("unthrottling write");
         _stats.background_writes++;
         _proxy->_global_stats.background_write_bytes += _mutation_holder->size();
         _throttled = false;
@@ -1435,6 +1437,7 @@ public:
                 if (self->_proxy->need_throttle_writes()) {
                     self->_throttled = true;
                     self->_proxy->_throttled_writes.push_back(self->_id);
+                    // slogger.info("throttle queue length: {}", self->_proxy->_throttled_writes.size());
                     ++self->_stats.throttled_writes;
                 } else {
                     self->unthrottle();
@@ -1558,6 +1561,10 @@ public:
             ++stats().total_throttled_base_writes;
             tracing::trace(trace, "Delaying user write due to view update backlog {}/{} by {}us",
                           backlog.get_current_bytes(), backlog.get_max_bytes(), delay.count());
+            if (delay.count() > 100000) {
+                slogger.info("Delaying user write due to view update backlog {}/{} by {}us",
+                             backlog.get_current_bytes(), backlog.get_max_bytes(), delay.count());
+            }
             // Waited on indirectly.
             (void)sleep_abortable<seastar::steady_clock_type>(delay).finally([self = shared_from_this(), on_resume = std::forward<Func>(on_resume)] {
                 --self->stats().throttled_base_writes;
@@ -2371,6 +2378,10 @@ bool storage_proxy::need_throttle_writes() const {
     if (utils::get_local_injector().enter("throttle_writes")) {
         return true;
     }
+
+    slogger.info("Throttling writes: background_write_bytes={}/{}, queued_write_bytes={}/{}",
+                 get_global_stats().background_write_bytes, _background_write_throttle_threahsold,
+                    get_global_stats().queued_write_bytes, 6*1024*1024);
     return get_global_stats().background_write_bytes > _background_write_throttle_threahsold || get_global_stats().queued_write_bytes > 6*1024*1024;
 }
 
@@ -2402,12 +2413,14 @@ void storage_proxy::unthrottle() {
 
 storage_proxy::response_id_type storage_proxy::register_response_handler(shared_ptr<abstract_write_response_handler>&& h) {
     auto id = h->id();
+    // slogger.info("Registering response handler {}", id);
     auto e = _response_handlers.emplace(id, std::move(h));
     assert(e.second);
     return id;
 }
 
 void storage_proxy::remove_response_handler(storage_proxy::response_id_type id) {
+    // slogger.info("Removing response handler {}", id);
     auto entry = _response_handlers.find(id);
     assert(entry != _response_handlers.end());
     remove_response_handler_entry(std::move(entry));
@@ -2422,6 +2435,7 @@ void storage_proxy::got_response(storage_proxy::response_id_type id, gms::inet_a
     auto it = _response_handlers.find(id);
     if (it != _response_handlers.end()) {
         tracing::trace(it->second->get_trace_state(), "Got a response from /{}", from);
+        // slogger.info("Got a response from /{}", from);
         if (it->second->response(from)) {
             remove_response_handler_entry(std::move(it)); // last one, remove entry. Will cancel expiration timer too.
         } else {
@@ -2435,6 +2449,7 @@ void storage_proxy::got_failure_response(storage_proxy::response_id_type id, gms
     auto it = _response_handlers.find(id);
     if (it != _response_handlers.end()) {
         tracing::trace(it->second->get_trace_state(), "Got {} failures from /{}", count, from);
+        // slogger.info("Got {} failures from /{}", count, from);
         if (it->second->failure_response(from, count, err, std::move(msg))) {
             remove_response_handler_entry(std::move(it));
         } else {
@@ -2450,9 +2465,14 @@ void storage_proxy::maybe_update_view_backlog_of(gms::inet_address replica, std:
         _view_update_backlogs.insert_or_assign(replica, view_update_backlog_timestamped{*backlog, now});
     }
 }
+static thread_local size_t last = 0;
 
 void storage_proxy::update_view_update_backlog() {
     _max_view_update_backlog.add(get_db().local().get_view_update_backlog());
+    if (last + 1000000 < get_db().local().get_view_update_backlog().get_current_bytes()){
+    slogger.info("View backlog after update: {}/{}", get_db().local().get_view_update_backlog().get_current_bytes(), get_db().local().get_view_update_backlog().get_max_bytes());
+    last = get_db().local().get_view_update_backlog().get_current_bytes();
+    }
 }
 
 db::view::update_backlog storage_proxy::get_view_update_backlog() {
@@ -4076,6 +4096,7 @@ void storage_proxy::send_to_live_endpoints(storage_proxy::response_id_type respo
     auto& stats = handler_ptr->stats();
     auto& handler = *handler_ptr;
     auto& global_stats = handler._proxy->_global_stats;
+    // slogger.info("Sending mutation to {} live endpoints", handler.get_targets().size());
     if (handler.get_targets().size() != 1 || !is_me(handler.get_targets()[0])) {
         auto& topology = handler_ptr->_effective_replication_map_ptr->get_topology();
         auto local_dc = topology.get_datacenter();
