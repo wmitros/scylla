@@ -2361,10 +2361,11 @@ class scylla_memory(gdb.Command):
 
         database_typename = lookup_type(['replica::database', 'database'])[1].name
         gdb.write('Replica:\n')
-        gdb.write('  Read Concurrency Semaphores:\n    {}\n    {}\n    {}\n'.format(
+        gdb.write('  Read Concurrency Semaphores:\n    {}\n    {}\n    {}\n    {}\n'.format(
                 scylla_memory.format_semaphore_stats(db['_read_concurrency_sem']),
                 scylla_memory.format_semaphore_stats(db['_streaming_concurrency_sem']),
-                scylla_memory.format_semaphore_stats(db['_system_read_concurrency_sem'])))
+                scylla_memory.format_semaphore_stats(db['_system_read_concurrency_sem']),
+                scylla_memory.format_semaphore_stats(db['_view_update_read_concurrency_sem'])))
 
         gdb.write('  Execution Stages:\n')
         for es_path in [('_apply_stage',)]:
@@ -5904,6 +5905,11 @@ class scylla_read_stats(gdb.Command):
                 semaphores.append(db["_compaction_concurrency_sem"])
             except gdb.error:
                 # 2020.1 compatibility
+                pass
+            try:
+                semaphores.append(db["_view_update_read_concurrency_sem"])
+            except gdb.error:
+                # 6.4 compatibility
                 pass
 
         for semaphore in semaphores:
