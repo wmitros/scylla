@@ -1626,6 +1626,14 @@ future<reader_permit> database::obtain_reader_permit(schema_ptr schema, const ch
     return obtain_reader_permit(find_column_family(std::move(schema)), op_name, timeout, std::move(trace_ptr));
 }
 
+future<reader_permit> database::obtain_view_update_reader_permit(table& tbl, const char* const op_name, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr) {
+    return _view_update_read_concurrency_sem.obtain_permit(tbl.schema(), op_name, tbl.estimate_read_memory_cost(), timeout, std::move(trace_ptr));
+}
+
+future<reader_permit> database::obtain_view_update_reader_permit(schema_ptr schema, const char* const op_name, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr) {
+    return obtain_view_update_reader_permit(find_column_family(std::move(schema)), op_name, timeout, std::move(trace_ptr));
+}
+
 bool database::is_user_semaphore(const reader_concurrency_semaphore& semaphore) const {
     return &semaphore != &_streaming_concurrency_sem
         && &semaphore != &_compaction_concurrency_sem

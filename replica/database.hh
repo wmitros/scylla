@@ -1416,7 +1416,7 @@ public:
 private:
     replica::cf_stats _cf_stats;
     static constexpr size_t max_count_concurrent_reads{100};
-    static constexpr size_t max_count_concurrent_view_update_reads{100};
+    static constexpr size_t max_count_concurrent_view_update_reads{50};
     size_t max_memory_concurrent_reads() { return _dbcfg.available_memory * 0.02; }
     size_t max_memory_concurrent_view_update_reads() { return _dbcfg.available_memory * 0.01; }
     // Assume a queued read takes up 1kB of memory, and allow 2% of memory to be filled up with such reads.
@@ -1876,6 +1876,8 @@ public:
     // Convenience method to obtain an admitted permit. See reader_concurrency_semaphore::obtain_permit().
     future<reader_permit> obtain_reader_permit(table& tbl, const char* const op_name, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr);
     future<reader_permit> obtain_reader_permit(schema_ptr schema, const char* const op_name, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr);
+    future<reader_permit> obtain_view_update_reader_permit(table& tbl, const char* const op_name, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr);
+    future<reader_permit> obtain_view_update_reader_permit(schema_ptr schema, const char* const op_name, db::timeout_clock::time_point timeout, tracing::trace_state_ptr trace_ptr);
 
     bool is_internal_query() const;
     bool is_user_semaphore(const reader_concurrency_semaphore& semaphore) const;
