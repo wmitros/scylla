@@ -3222,14 +3222,6 @@ database::on_effective_service_levels_cache_reloaded() {
     co_return;
 }
 
-void database::check_rf_rack_validity(const locator::token_metadata_ptr tmptr) const {
-    SCYLLA_ASSERT(get_config().rf_rack_valid_keyspaces());
-
-    for (const auto& [name, info] : get_keyspaces()) {
-        locator::assert_rf_rack_valid_keyspace(name, tmptr, info.get_replication_strategy());
-    }
-}
-
 utils::chunked_vector<uint64_t> compute_random_sorted_ints(uint64_t max_value, uint64_t n_values) {
     static thread_local std::minstd_rand rng{std::random_device{}()};
     std::uniform_int_distribution<uint64_t> dist(0, max_value);

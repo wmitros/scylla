@@ -120,21 +120,6 @@ future<std::tuple<::shared_ptr<cql_transport::event::schema_change>, std::vector
                 warnings.push_back("Keyspace `initial` tablets option is deprecated.  Use per-table tablet options instead.");
             }
         }
-
-        // If `rf_rack_valid_keyspaces` is enabled, it's forbidden to create an RF-rack-invalid keyspace.
-        // Verify that it's RF-rack-valid.
-        // For more context, see: scylladb/scylladb#23071.
-        if (cfg.rf_rack_valid_keyspaces()) {
-            try {
-                // We hold a group0_guard, so it's correct to check this here.
-                // The topology or schema cannot change while we're performing this query.
-                locator::assert_rf_rack_valid_keyspace(_name, tmptr, *rs);
-            } catch (const std::exception& e) {
-                // There's no guarantee what the type of the exception will be, so we need to
-                // wrap it manually here in a type that can be passed to the user.
-                throw exceptions::invalid_request_exception(e.what());
-            }
-        }
     } catch (const exceptions::already_exists_exception& e) {
         if (!_if_not_exists) {
           co_return coroutine::exception(std::current_exception());

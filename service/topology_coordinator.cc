@@ -920,7 +920,7 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
                 auto views = ks.metadata()->views();
                 tables_with_mvs.insert(tables_with_mvs.end(), views.begin(), views.end());
                 std::optional<std::unordered_map<sstring, std::set<sstring>>> dc_racks;
-                if (_db.get_config().rf_rack_valid_keyspaces() && !tables_with_mvs.empty()) {
+                if (!tables_with_mvs.empty()) {
                     auto first_table_id = (*tables_with_mvs.begin())->id();
                     auto first_table_tablet_map = tmptr->tablets().get_tablet_map(first_table_id);
                     locator::replication_strategy_params params{repl_opts, first_table_tablet_map.tablet_count()};
