@@ -1140,6 +1140,233 @@ public:
         co_return std::move(plan);
     }
 
+    future<migration_plan> make_rack_colocation_plan(const dc_name& dc, node_load_map& nodes) {
+        migration_plan plan;
+        const locator::topology& topo = _tm->get_topology();
+        const tablet_metadata& tmeta = _tm->tablets();
+
+        // Group tables by keyspace
+        std::unordered_map<sstring, std::vector<table_id>> keyspace_tables;
+        for (auto&& [table, tmap_] : tmeta.all_tables()) {
+            auto schema = _db.find_schema(table);
+            keyspace_tables[schema->ks_name()].push_back(table);
+        }
+
+        // Gather all racks in the DC from the topology
+        std::unordered_set<sstring> all_racks;
+        topo.for_each_node([&](const locator::node& node) {
+            if (node.dc() == dc) {
+                all_racks.insert(node.rack());
+            }
+        });
+
+        // Process each keyspace
+        for (auto&& [ks_name, tables] : keyspace_tables) {
+            if (tables.empty()) {
+                continue;
+            }
+
+            // Get keyspace replication strategy
+            auto& ks = _db.find_keyspace(ks_name);
+            auto& rs = ks.get_replication_strategy();
+            auto tablet_rs = rs.maybe_as_tablet_aware();
+            if (!tablet_rs) {
+                continue;
+            }
+
+            // Get replication factor for the current DC
+            size_t rf = tablet_rs->get_replication_factor(dc);
+
+            // For each rack, count the number of unique tablets present in this rack for this keyspace
+            // Count tablets instead of replicas per rack, as in the final plan each rack will have
+            // at most one replica of each tablet, so if we have more we'll still need to migrate some.
+            std::unordered_map<sstring, size_t> rack_tablet_counts;
+            std::unordered_map<sstring, std::unordered_set<global_tablet_id>> rack_tablets;
+
+            for (auto&& table : tables) {
+                auto& tmap = tmeta.get_tablet_map(table);
+
+                co_await tmap.for_each_tablet([&](tablet_id tid, const tablet_info& ti) -> future<> {
+                    global_tablet_id gid{table, tid};
+                    std::unordered_set<sstring> racks_seen;
+                    for (auto& replica : ti.replicas) {
+                        auto* node = topo.find_node(replica.host);
+                        if (!node || node->dc() != dc) {
+                            continue;
+                        }
+                        const auto& rack = node->rack();
+                        // Only count this tablet once per rack
+                        if (racks_seen.insert(rack).second) {
+                            rack_tablets[rack].insert(gid);
+                        }
+                    }
+                    co_return;
+                });
+            }
+            for (const auto& rack : all_racks) {
+                rack_tablet_counts[rack] = rack_tablets[rack].size();
+            }
+
+            // Select top RF racks with most unique tablets
+            std::vector<std::pair<sstring, size_t>> rack_count_pairs(rack_tablet_counts.begin(), rack_tablet_counts.end());
+            std::sort(rack_count_pairs.begin(), rack_count_pairs.end(),
+                [](const auto& a, const auto& b) { return a.second > b.second; });
+
+            std::vector<sstring> selected_racks;
+            for (auto& [rack, count] : rack_count_pairs) {
+                if (selected_racks.size() < rf) {
+                    selected_racks.push_back(rack);
+                }
+            }
+
+            // If we don't have enough racks, add random ones from all_racks
+            if (selected_racks.size() < rf) {
+                std::vector<sstring> available_racks;
+                for (auto& rack : all_racks) {
+                    if (std::find(selected_racks.begin(), selected_racks.end(), rack) == selected_racks.end()) {
+                        available_racks.push_back(rack);
+                    }
+                }
+                // If we still don't have enough unique racks, we can't satisfy RF
+                if (selected_racks.size() + available_racks.size() < rf) {
+                    lblogger.warn("Cannot satisfy RF={} for keyspace {} in DC {} - not enough racks available",
+                        rf, ks_name, dc);
+                    continue;
+                }
+                std::shuffle(available_racks.begin(), available_racks.end(), std::default_random_engine(rand_int()));
+                while (selected_racks.size() < rf && !available_racks.empty()) {
+                    selected_racks.push_back(available_racks.back());
+                    available_racks.pop_back();
+                }
+            }
+
+            lblogger.debug("Selected {} racks for keyspace {}: {}", selected_racks.size(), ks_name, selected_racks);
+
+            // For each table in keyspace, check and migrate tablets
+            for (auto&& table : tables) {
+                auto& tmap = tmeta.get_tablet_map(table);
+
+                co_await tmap.for_each_tablet([&](tablet_id tid, const tablet_info& ti) -> future<> {
+                    global_tablet_id tablet_gid{table, tid};
+
+                    // For each rack, only count one replica per rack for this tablet
+                    std::unordered_map<sstring, std::vector<tablet_replica>> replicas_by_rack;
+                    std::unordered_set<sstring> racks_with_replica;
+                    for (auto& replica : ti.replicas) {
+                        auto* node = topo.find_node(replica.host);
+                        if (!node || node->dc() != dc) {
+                            continue;
+                        }
+                        auto& rack = node->rack();
+                        replicas_by_rack[rack].push_back(replica);
+                        racks_with_replica.insert(rack);
+                    }
+
+                    // Check if tablet has at least one replica in each selected rack
+                    bool properly_distributed = true;
+                    for (const auto& rack : selected_racks) {
+                        if (replicas_by_rack[rack].empty()) {
+                            properly_distributed = false;
+                            break;
+                        }
+                    }
+                    if (properly_distributed) {
+                        co_return;
+                    }
+
+                    // Select a source rack to migrate from
+                    std::optional<sstring> source_rack;
+                    // First check if any of the selected racks has too many replicas
+                    for (const auto& rack : selected_racks) {
+                        if (replicas_by_rack[rack].size() > 1) {
+                            source_rack = rack;
+                            break;
+                        }
+                    }
+                    // If not found, pick any rack outside selected_racks with >1 replica
+                    if (!source_rack) {
+                        for (const auto& [rack, replicas] : replicas_by_rack) {
+                            if (replicas.size() > 1 && std::find(selected_racks.begin(), selected_racks.end(), rack) == selected_racks.end()) {
+                                source_rack = rack;
+                                break;
+                            }
+                        }
+                    }
+                    if (!source_rack) {
+                        // Can't find a source rack to migrate from
+                        co_return;
+                    }
+
+                    // Find a target rack from our selected racks that doesn't have a replica
+                    std::optional<sstring> target_rack;
+                    for (const auto& rack : selected_racks) {
+                        if (replicas_by_rack[rack].empty()) {
+                            target_rack = rack;
+                            break;
+                        }
+                    }
+                    if (!target_rack) {
+                        // All racks have a replica, nothing to do
+                        co_return;
+                    }
+
+                    // Select source replica
+                    tablet_replica src = replicas_by_rack[*source_rack][0];
+
+                    // Find best target node in the target rack
+                    std::optional<tablet_replica> best_dst;
+                    migration_badness best_badness;
+
+                    for (auto&& [host, node_info] : nodes) {
+                        auto* node = topo.find_node(host);
+                        if (!node || node->dc() != dc || node->rack() != *target_rack || node->get_state() != locator::node::state::normal) {
+                            continue;
+                        }
+                        // Find best shard on this node
+                        for (shard_id shard = 0; shard < node_info.shard_count; shard++) {
+                            tablet_replica dst{host, shard};
+                            auto badness = evaluate_candidate(nodes, table, src, dst);
+                            if (!best_dst || badness < best_badness) {
+                                best_dst = dst;
+                                best_badness = badness;
+                            }
+                        }
+                    }
+
+                    if (!best_dst) {
+                        co_return;
+                    }
+
+                    // Prepare migration
+                    migration_tablet_set tablets{tablet_gid};
+                    auto mig = get_migration_info(tablets, tablet_transition_kind::migration, src, *best_dst);
+                    auto mig_streaming_info = get_migration_streaming_infos(topo, tmap, mig);
+
+                    if (!can_accept_load(nodes, mig_streaming_info)) {
+                        lblogger.debug("Cannot migrate tablet {} from {} to {} due to load constraints",
+                            tablet_gid, src, *best_dst);
+                        _stats.for_dc(dc).migrations_skipped++;
+                        co_return;
+                    }
+
+                    // Apply the migration
+                    apply_load(nodes, mig_streaming_info);
+                    erase_candidates(nodes, tmap, tablets);
+                    update_node_load_on_migration(nodes, src, *best_dst, tablets);
+
+                    _stats.for_dc(dc).migrations_produced++;
+                    plan.add(std::move(mig));
+                    lblogger.info("Created rack colocation migration for tablet {} from {} (rack: {}) to {} (rack: {})",
+                        tablet_gid, src, *source_rack, *best_dst, *target_rack);
+
+                    co_return;
+                });
+            }
+        }
+
+        co_return std::move(plan);
+    }
+
     std::tuple<schema_ptr, const tablet_aware_replication_strategy*> get_schema_and_rs(table_id table) {
         auto t = _db.get_tables_metadata().get_table_if_exists(table);
         if (!t) {
@@ -3069,6 +3296,13 @@ public:
             auto dc_merge_plan = co_await make_merge_colocation_plan(dc, nodes);
             auto level = dc_merge_plan.tablet_migration_count() > 0 ? seastar::log_level::info : seastar::log_level::debug;
             lblogger.log(level, "Prepared {} migrations for co-locating sibling tablets in DC {}", dc_merge_plan.tablet_migration_count(), dc);
+            plan.merge(std::move(dc_merge_plan));
+        }
+
+        if (_tm->tablets().balancing_enabled() && plan.empty()) {
+            auto dc_merge_plan = co_await make_rack_colocation_plan(dc, nodes);
+            auto level = dc_merge_plan.tablet_migration_count() > 0 ? seastar::log_level::info : seastar::log_level::debug;
+            lblogger.log(level, "Prepared {} migrations for co-locating tablets in racks in DC {}", dc_merge_plan.tablet_migration_count(), dc);
             plan.merge(std::move(dc_merge_plan));
         }
 
