@@ -1575,6 +1575,7 @@ private:
 
     // The view update read concurrency semaphores used for view updates coming from user writes.
     reader_concurrency_semaphore_group _view_update_read_concurrency_semaphores_group;
+    db::timeout_semaphore _view_update_concurrency_sem;
     db::timeout_semaphore _view_update_memory_sem{max_memory_pending_view_updates()};
 
     cache_tracker _row_cache_tracker;
@@ -2018,6 +2019,10 @@ public:
 
     bool is_internal_query() const;
     bool is_user_semaphore(const reader_concurrency_semaphore& semaphore) const;
+
+    db::timeout_semaphore& view_update_concurrency_sem() {
+        return _view_update_concurrency_sem;
+    }
 
     db::timeout_semaphore& view_update_memory_sem() {
         return _view_update_memory_sem;

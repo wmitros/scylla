@@ -407,6 +407,7 @@ database::database(const db::config& cfg, database_config dbcfg, service::migrat
             _cfg.view_update_reader_concurrency_semaphore_kill_limit_multiplier,
             _cfg.view_update_reader_concurrency_semaphore_cpu_concurrency,
             "view_update")
+    , _view_update_concurrency_sem(db::view::view_update_generator::max_concurrent_updates)
     , _row_cache_tracker(_cfg.index_cache_fraction.operator utils::updateable_value<double>(), cache_tracker::register_metrics::yes)
     , _apply_stage("db_apply", &database::do_apply)
     , _version(empty_version)
@@ -2504,6 +2505,7 @@ future<> database::stop() {
         co_await _schema_commitlog->shutdown();
         dblog.info("Shutting down schema commitlog complete");
     }
+    co_await _view_update_concurrency_sem.wait(db::view::view_update_generator::max_concurrent_updates);
     co_await _view_update_memory_sem.wait(max_memory_pending_view_updates());
     if (_commitlog) {
         co_await _commitlog->release();
