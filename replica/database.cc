@@ -2215,6 +2215,8 @@ future<> database::do_apply(schema_ptr s, const frozen_mutation& m, tracing::tra
             co_await coroutine::return_exception_ptr(std::move(ex));
         }
         lock = lock_f.get();
+    } else {
+        dblog.info("Won't push view updates for {}.{}, no views", s->ks_name(), s->cf_name());
     }
 
     // purposefully manually "inlined" apply_with_commitlog call here to reduce # coroutine

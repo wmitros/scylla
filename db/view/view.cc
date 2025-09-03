@@ -2105,7 +2105,9 @@ future<> view_update_generator::mutate_MV(
             ++cf_stats.total_view_updates_pushed_local;
             ++stats.writes;
             auto mut_ptr = remote_endpoints.empty() ? std::make_unique<frozen_mutation>(std::move(mut.fm)) : std::make_unique<frozen_mutation>(mut.fm);
-            tracing::trace(tr_state, "Locally applying view update for {}.{}; base token = {}; view token = {}",
+            tracing::trace(tr_state, "Locally applying {}view update for {}.{}; base token = {}; view token = {}", wait_for_all ? "view building " : "",
+                    mut.s->ks_name(), mut.s->cf_name(), base_token, view_token);
+            vlogger.info("Locally applying view update for {}.{}; base token = {}; view token = {}",
                     mut.s->ks_name(), mut.s->cf_name(), base_token, view_token);
             local_view_update = _proxy.local().mutate_mv_locally(mut.s, *mut_ptr, tr_state, db::commitlog::force_sync::no).then_wrapped(
                     [s = mut.s, &stats, &cf_stats, tr_state, base_token, view_token, my_address, mut_ptr = std::move(mut_ptr),
@@ -2123,6 +2125,8 @@ future<> view_update_generator::mutate_MV(
                     return make_exception_future<>(std::move(ep));
                 }
                 tracing::trace(tr_state, "Successfully applied local view update for {}", my_address);
+                vlogger.info("Success applying view update to {} (view: {}.{}, base token: {}, view token: {})",
+                    my_address, s->ks_name(), s->cf_name(), base_token, view_token);
                 return make_ready_future<>();
             });
             // We just applied a local update to the target endpoint, so it should now be removed
@@ -2145,9 +2149,13 @@ future<> view_update_generator::mutate_MV(
             stats.view_updates_pushed_remote += updates_pushed_remote;
             cf_stats.total_view_updates_pushed_remote += updates_pushed_remote;
             schema_ptr s = mut.s;
+            auto all_remote_endpoints = remote_endpoints;
+            all_remote_endpoints.push_back(*target_endpoint);
+            vlogger.info("Sending {}view update for {}.{} to {}; base token = {}; view token = {}",
+                    wait_for_all ? "view building " : "", s->ks_name(), s->cf_name(), all_remote_endpoints, base_token, view_token);
             future<> remote_view_update = apply_to_remote_endpoints(_proxy.local(), std::move(view_ermp), *target_endpoint, std::move(remote_endpoints), std::move(mut), base_token, view_token, allow_hints, tr_state).then_wrapped(
                 [s = std::move(s), &stats, &cf_stats, tr_state, base_token, view_token, target_endpoint, updates_pushed_remote,
-                 sem_units, apply_update_synchronously, this] (future<>&& f) mutable {
+                 sem_units, apply_update_synchronously, all_remote_endpoints = std::move(all_remote_endpoints), this] (future<>&& f) mutable {
                 sem_units = nullptr;
                 _proxy.local().update_view_update_backlog();
                 if (f.failed()) {
@@ -2157,15 +2165,19 @@ future<> view_update_generator::mutate_MV(
                     tracing::trace(tr_state, "Failed to apply view update for {} and {} remote endpoints",
                         *target_endpoint, updates_pushed_remote);
 
-                    // Printing an error on every failed view mutation would cause log spam, so a rate limit is needed.
-                    static thread_local logger::rate_limit view_update_error_rate_limit(std::chrono::seconds(4));
-                    vlogger.log(log_level::warn, view_update_error_rate_limit,
-                        "Error applying view update to {} (view: {}.{}, base token: {}, view token: {}): {}",
-                        *target_endpoint, s->ks_name(), s->cf_name(), base_token, view_token, ep);
+                    // // Printing an error on every failed view mutation would cause log spam, so a rate limit is needed.
+                    // static thread_local logger::rate_limit view_update_error_rate_limit(std::chrono::seconds(4));
+                    // vlogger.log(log_level::warn, view_update_error_rate_limit,
+                    //     "Error applying view update to {} (view: {}.{}, base token: {}, view token: {}): {}",
+                    //     *target_endpoint, s->ks_name(), s->cf_name(), base_token, view_token, ep);
+                    vlogger.info("Error applying view update to {} (view: {}.{}, base token: {}, view token: {}): {}",
+                        all_remote_endpoints, s->ks_name(), s->cf_name(), base_token, view_token, ep);
                     return apply_update_synchronously ? make_exception_future<>(std::move(ep)) : make_ready_future<>();
                 }
                 tracing::trace(tr_state, "Successfully applied view update for {} and {} remote endpoints",
                     *target_endpoint, updates_pushed_remote);
+                vlogger.info("Success applying view update for {} (view: {}.{}, base token: {}, view token: {})",
+                    all_remote_endpoints, s->ks_name(), s->cf_name(), base_token, view_token);
                 return make_ready_future<>();
             });
             if (apply_update_synchronously) {
