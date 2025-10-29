@@ -1621,8 +1621,9 @@ class topology_coordinator : public endpoint_lifecycle_subscriber {
                                 .del_transition(last_token)
                                 .del_migration_task_info(last_token, _feature_service)
                                 .build());
-                        if (trinfo.pending_replica) {
-                            _vb_coordinator->rollback_aborted_tasks(updates, guard, gid.table, *trinfo.pending_replica, last_token);
+                        auto leaving_replica = get_leaving_replica(tmap.get_tablet_info(gid.tablet), trinfo);
+                        if (leaving_replica) {
+                            _vb_coordinator->rollback_aborted_tasks(updates, guard, gid.table, *leaving_replica, last_token);
                         }
                     }
                     break;

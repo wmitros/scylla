@@ -495,7 +495,7 @@ future<> view_building_coordinator::stop() {
 }
 
 void view_building_coordinator::generate_tablet_migration_updates(utils::chunked_vector<canonical_mutation>& out, const service::group0_guard& guard, const locator::tablet_map& tmap, locator::global_tablet_id gid, const locator::tablet_transition_info& trinfo) {
-    vbc_logger.debug("Generating updates for tablet migration for table {}", gid.table);
+    vbc_logger.debug("Generating updates for tablet migration for tablet {} of table {}", gid.tablet, gid.table);
     
     if (!_vb_sm.building_state.tasks_state.contains(gid.table)) {
         vbc_logger.debug("No view building tasks for table {} - skipping tablet migration updates generation", gid.table);
@@ -506,6 +506,7 @@ void view_building_coordinator::generate_tablet_migration_updates(utils::chunked
     auto leaving_replica = locator::get_leaving_replica(tinfo, trinfo);
 
     if (!leaving_replica && !trinfo.pending_replica) {
+        vbc_logger.debug("Tablet {} is not in migration - skipping tablet migration updates generation", gid.tablet);
         return;
     }
 
@@ -526,7 +527,9 @@ void view_building_coordinator::generate_tablet_migration_updates(utils::chunked
 
     if (leaving_replica && trinfo.pending_replica) {
         // tablet migration
-        auto tasks_to_migrate = _vb_sm.building_state.collect_tasks_by_last_token(gid.table, *leaving_replica)[last_token];
+        auto tasks = _vb_sm.building_state.collect_tasks_by_last_token(gid.table, *leaving_replica);
+        vbc_logger.debug("Collected tasks for migration from {} to {} (last_token {}): {}", *leaving_replica, *trinfo.pending_replica, last_token, tasks);
+        auto tasks_to_migrate = tasks[last_token];
         for (auto& task: tasks_to_migrate) {
             create_task_copy_on_pending_replica(task);
             builder.del_task(task.id);
@@ -535,7 +538,9 @@ void view_building_coordinator::generate_tablet_migration_updates(utils::chunked
         
     } else if (leaving_replica) {
         // RF decrease
-        auto tasks_to_abort = _vb_sm.building_state.collect_tasks_by_last_token(gid.table, *leaving_replica)[last_token];
+        auto tasks = _vb_sm.building_state.collect_tasks_by_last_token(gid.table, *leaving_replica);
+        vbc_logger.debug("Collected tasks for rf decrease on {} (last_token {}): {}", *leaving_replica, last_token, tasks);
+        auto tasks_to_abort = tasks[last_token];
         for (auto& task: tasks_to_abort) {
             builder.del_task(task.id);
             vbc_logger.debug("Aborting task {} for abandoning replica {}", task.id, task.replica);
@@ -549,7 +554,9 @@ void view_building_coordinator::generate_tablet_migration_updates(utils::chunked
         // This might be optimized out depending on how data on the new replicas is built.
         // If all tablet replicas are built for the view, we're sure new view's replicas will also get correct data.
         std::unordered_map<::table_id, std::vector<view_building_task>> tasks_per_view;
-        auto tasks_for_tablet = _vb_sm.building_state.collect_tasks_by_last_token(gid.table)[last_token];
+        auto tasks = _vb_sm.building_state.collect_tasks_by_last_token(gid.table);
+        vbc_logger.debug("Collected tasks for rf increase (last_token {}): {}", last_token, tasks);
+        auto tasks_for_tablet = tasks[last_token];
         for (auto& t: tasks_for_tablet | std::views::filter([] (const view_building_task& t) {
             return t.type == view_building_task::task_type::build_range;
         })) {
